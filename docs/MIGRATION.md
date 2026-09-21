@@ -91,6 +91,15 @@ result, fills = chain.step()
 chain = build_chain(strategy="./my_private.py")     # transport="gist" + 环境变量凭据
 ```
 
+> ★ **Gist 只是一个内置的参考实现，不是这条路线的终点。** 本文件拿它举例，
+> 是因为它跨机器、零运维、且本仓库有完整实现。**同机部署用 `file` 就够，
+> 一个变量都不用配**；跨机器但不想依赖 Gist 的话，对象存储 / 自建 HTTP /
+> 网络盘都可以 —— 实现 `Transport` 的三个方法（`read` / `write` / `describe`）
+> 就完了，下面这些步骤一个字都不用改。
+>
+> 反过来说，**换存储换不掉任何一条约束**：单一写入者、幂等键、闸门方向，
+> 全都与后端无关。
+
 凭据**一个都不在源码里**，全部从环境变量读 —— 变量名、含义与默认值见
 [`.env.example`](../.env.example)（`cp .env.example .env` 后填自己的值）。
 `SC_GIST_ID` 要按**凭据**对待：secret gist **不是 private**，

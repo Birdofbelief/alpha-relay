@@ -8,22 +8,28 @@
 
 **把「策略」和「把策略的信号安全送到券商」拆开的框架。**
 
-策略只需要实现一个 `decide(ctx)`；取数、数据质量校验、风控闸门、投递、重试、
-回执、持仓对账、调度、心跳、告警，全部由链路负责。
+策略在**你自己的机器上**跑（数据从 akshare / tushare 或你自己的源来），
+只需要实现一个 `decide(ctx)`；数据质量校验、风控闸门、投递、重试、回执、
+持仓对账、调度、心跳、告警，全部由链路负责。
 
-投递后端可拔插（Gist / 本地文件 / 空实现），
-策略可从**仓库外路径**加载 —— 你的 alpha 永远不会进这个仓库。
+**投递通道可拔插**（本地文件 / Gist / 空实现 / 你自己实现的任意存储），
+**执行端也可拔插** —— 接你自己的券商终端（miniQMT 这类本地客户端，或你自己写的适配层）。
+策略从**仓库外路径**加载：**你的 alpha 不进这个仓库，也不进券商平台。**
 
 ```
 零凭据、零网络、零券商也能完整跑通：py -m signalchain.demo
 ```
 
 > **English** — *signal-chain* decouples a trading strategy from the plumbing that
-> delivers its signals safely. Your strategy implements one pure function, `decide(ctx)`;
-> the framework owns market data, data-quality gates, risk gates, delivery, retries,
-> execution receipts, position reconciliation, scheduling, heartbeats and alerting.
-> Delivery backends are pluggable (GitHub Gist / local file / null), and **strategies are
-> loaded from paths outside this repository — your alpha never enters it.**
+> delivers its signals safely. Your strategy runs on **your own machine** and implements
+> one pure function, `decide(ctx)`; the framework owns data-quality gates, risk gates,
+> delivery, retries, execution receipts, position reconciliation, scheduling, heartbeats
+> and alerting.
+> **Both ends are pluggable**: the delivery channel (local file / GitHub Gist / null /
+> any store you implement) and the executor (wire up your own broker terminal — miniQMT
+> and the like, or an adapter layer you write yourself). Strategies are loaded from paths
+> outside this repository, so
+> **your alpha never enters this repo, and never enters the broker's platform either.**
 > The chain runs end to end with **zero credentials, zero network and zero broker**:
 > `py -m signalchain.demo`. Design notes and reference docs are written in Chinese;
 > this README is the entry point.
@@ -37,6 +43,7 @@
 - [一分钟看懂](#一分钟看懂)
 - [三条贯穿全库的主张](#三条贯穿全库的主张)
 - [快速上手](#快速上手)
+- [跨机器：信号怎么从产生端走到执行端](#跨机器信号怎么从产生端走到执行端)
 - [跑测试](#跑测试)
 - [关于「零凭据」](#关于零凭据)
 - [现状与边界](#现状与边界)
@@ -82,10 +89,10 @@
 |---|---|---|
 | `Strategy` | 你的 alpha。**只实现 `decide(ctx)`，不碰任何 I/O** | 任何策略，包括仓库外的私有策略 |
 | `MarketData` | 行情与历史 | 在线接口 / 本地缓存装饰器 / 假数据 |
-| `Transport` | 投递与读取 | Gist / 本地文件 / 空实现 |
+| `Transport` | 投递与读取 | 本地文件 / Gist / 空实现 / 你自己实现的存储 |
 | `Gate` | 风控（与策略无关） | 三个内置闸门，可增删 |
 | `Runner` | 调度、时间预算、失败上限、心跳 | —— |
-| `PaperExecutor` | 本地纸面成交（无券商） | 真券商客户端（见[现状与边界](#现状与边界)） |
+| `Executor` | 执行端：把信号变成委托 | 你的券商终端；内置的 `PaperExecutor` 只是**无券商占位**（见[执行端](#换成你自己的执行端)） |
 
 ### 一分钟看懂
 
@@ -101,14 +108,15 @@
    │    │                    │                          │
    └───▶│                    ▼                          │
  Signal │            Transport（★ 可拔插）               │
-        │             ├─ GistTransport                  │
-        │             ├─ FileTransport   ← 演示/测试默认  │
+        │             ├─ FileTransport   ← 默认，零凭据  │
+        │             ├─ GistTransport   ← 跨机器参考实现 │
         │             └─ NullTransport   ← dry-run       │
         │                    │                          │
         │     回执 ◀─────────┘                          │
         └──────────────────────────────────────────────┘
                              ▲
-                    PaperExecutor（纸面成交，闭环）
+                    Executor（★ 可拔插：接你的券商终端）
+                      └─ PaperExecutor ← 无券商占位，闭环测试用
 ```
 
 ---
@@ -139,8 +147,15 @@
 
 ### 3. 单一写入者不是风格偏好，是当前唯一能消除竞态的手段
 
-GitHub Gist 的更新是 **read-modify-write，非原子**。两个写者同时改同一个 gist，
-后写的会静默覆盖先写的 —— 而「静默」是关键：两边都以为自己写成功了。
+**凡是靠「读出来 → 改一改 → 写回去」实现「往列表里追加」的存储，都不原子。**
+这不是 Gist 特有的病，而是这一整类后端的通病：两个写者同时改同一份文档，
+**后写的会静默覆盖先写的** —— 而「静默」才是关键：两边都以为自己写成功了，
+日志里也都写着成功。
+
+内置的 `GistTransport` 正好是这样一个后端（它每次投递都是一次完整的
+read-modify-write），所以拿它当例子。但你换成对象存储、网络盘、自建 HTTP 服务时，
+**只要那句「读改回写」还在，这个病就还在**。后端自己提供原子追加或 CAS 是唯一的
+例外 —— `Transport.supports_cas` 就是用来标这一点的标志位（内置的三个后端都还没有）。
 
 所以 channel 的**所有权写在代码里**（`transport/base.py` 的 `CHANNEL_OWNERS`）：
 
@@ -237,6 +252,33 @@ class MyStrategy(Strategy):
   回放同一天的行情会生成一批全新 id，「这条处理过没有」就永远答「没有」。
 - `decide()` 可以返回列表，也可以是生成器。
 
+### 换成你自己的执行端
+
+执行端的契约是 **`Executor` 那三个方法**。它是结构化类型（`typing.Protocol`）——
+**不必继承任何东西**，因为你的执行端多半已经有基类了（券商 SDK 的适配层）。
+骨架与必须自己包的那两行见 [`docs/EXECUTOR_GUIDE.md`](docs/EXECUTOR_GUIDE.md)。
+
+最短的验证路径是**先用假行情把它接上**：确认它真的被调到了、回执真的写回来了，
+再去接真行情。换的只是 `executor=` 这一个参数，产生端一行不动：
+
+```python
+from pathlib import Path
+
+from signalchain import Config, build_chain
+from signalchain.transport import FileTransport
+
+config = Config(role="producer", transport="file",
+                runtime_dir=Path("./runtime"))
+executor = MyExecutor(config, FileTransport(config.channel_dir))
+
+chain = build_chain(config, strategy="./my_private.py", executor=executor)
+```
+
+> ★ `executor=` 与 `with_executor=True` **互斥**：后者是「给我造一个内置纸面执行端」，
+> 两个一起给会**直接报错**，而不是静默挑一个。
+> 静默挑一个的代价不是报错，是你以为跑的是 A、实际跑的是 B ——
+> 而它表现得跟「今天没有信号」一模一样。
+
 ### 它实际跑起来是什么样
 
 下面是 `py -m signalchain.demo` 的真实输出（只做了两处删减：临时目录路径、
@@ -303,10 +345,40 @@ class MyStrategy(Strategy):
 
 ---
 
+## 跨机器：信号怎么从产生端走到执行端
+
+产生端和执行端常常不在同一台机器上 —— 策略在你本机（或一台跑数据的机器）上，
+执行端在券商终端那一侧。两端之间需要一个**双方都够得着**的地方放那四个 channel。
+
+本框架**对那是个什么地方不做规定**，它只要求那一处存储能实现 `Transport`
+的三个方法：
+
+```python
+read(channel) -> Any | None     # 读出某个 channel 的文档
+write(channel, doc) -> bool     # 整份写入（不是追加）
+describe() -> str               # 一句话自报身份（不得含凭据）
+```
+
+按你的场景挑：
+
+| 场景 | 用什么 |
+|---|---|
+| **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零依赖 —— `py -m signalchain.demo` 走的就是这条 |
+| **跨机器，你已有对象存储** | 自己写一个 `Transport`：三个方法，几十行。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
+| **跨机器，想先用现成的** | 内置的 `GistTransport` 是一个**参考实现**：它演示了「怎么把一个只会整份读写的 HTTP 服务包成 `Transport`」。能用，但它不是唯一的、也不是默认推荐的那个 |
+
+> ★ **有一条不随存储改变：一个 channel 只能有一个写者。**
+> 这条由 `SingleWriterGuard` 在运行时强制（见[第三条主张](#3-单一写入者不是风格偏好是当前唯一能消除竞态的手段)）。
+> 换存储换不掉它 —— 换掉的只是「两个写者打架时会怎么坏」的具体形态：
+> 文件后端可能是半截 JSON，对象存储是丢更新，Gist 是整份覆盖。
+> **都是静默的。**
+
+---
+
 ## 跑测试
 
 ```bash
-py -m pytest              # 242 项，全部离线，不需要任何凭据
+py -m pytest              # 256 项，全部离线，不需要任何凭据
 ```
 
 同一套测试也跑在 CI 上（Ubuntu + Windows × Python 3.10 / 3.12 / 3.13，
@@ -317,10 +389,10 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 而那是**本机配置、不随 clone 带走** —— 也就是说别人克隆下来默认是不设防的，
 所以服务端补一道。
 
-> 上面那个 **242** 是手工写的，会随代码变化。**以实测为准**：
+> 上面那个 **256** 是手工写的，会随代码变化。**以实测为准**：
 > `py -m pytest` 看退出码（0 = 全过）。
 >
-> ⚠️ **公开克隆里是 `240 passed, 2 skipped`** —— 有两条测试带 `skipif`，
+> ⚠️ **公开克隆里是 `254 passed, 2 skipped`** —— 有两条测试带 `skipif`，
 > 条件正是「作者本机那份私有指纹清单在不在」，在公开克隆里**必然跳过**。
 > 它们**只对本机有意义**（验的是那份清单自洽、且本仓库不踩它），
 > 所以这是设计，不是测试被削弱 —— 但**别把 `2 skipped` 读成「全跑过了」**。
@@ -330,7 +402,7 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 | 文件 | 在守什么 |
 |---|---|
 | `test_transport_contract.py` | 同一套用例跑遍所有后端 —— 这是「可拔插」的**证据**，不是口号 |
-| `test_wire_contract.py` | **线格式冻结**：字段名、后缀、时间格式与既有券商端逐字节兼容 |
+| `test_wire_contract.py` | **线格式冻结**：字段名、后缀、时间格式与既有执行端逐字节兼容 |
 | `test_strategy_contract.py` | 策略纯度绊线（碰 I/O 即红）+ 从仓库外加载策略 |
 | `test_end_to_end.py` | 接缝：读磁盘上的**真实字节**，不复用解析器 |
 | `test_sanitize_rules.py` | **脱敏扫描器自己的测试** —— 一个只会静默失效的检查器 |
@@ -380,8 +452,14 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡住
 ```
 
-`SC_GIST_ID` / `SC_GITHUB_TOKEN` / `SC_SERVERCHAN_KEY` / `SC_STRATEGY_PATH`
-等变量的含义都写在那个模板里。不需要 Gist 后端的话一个都不用填。
+**默认后端（本地文件）一个变量都不用设** —— 连 `.env` 都不建也能跑起来，
+`py -m signalchain.demo` 就是这条路径。需要填的是两件事：
+
+- `SC_STRATEGY_PATH` —— 如果你的策略在仓库外（推荐，也是默认姿势）；
+- `SC_GIST_ID` / `SC_GITHUB_TOKEN` / `SC_SERVERCHAN_KEY` —— 只有你选了 Gist 那个
+  后端、或想收手机推送时才需要。
+
+各变量的含义都写在那个模板里。
 
 ---
 
@@ -393,8 +471,9 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 |---|---|
 | **设计来源** | 这套分层、闸门方向、单一写入者约定，来自一个**真实在跑的实盘系统**（单文件形态，产生端与执行端分离）。文档里那些「为什么」不是推演出来的。 |
 | **本仓库的状态** | ⚠️ **它是从上面那套系统里独立提取出来的，尚未替换线上。** 也就是说：**设计经过实战，这份提取产物本身还没有在生产上跑过。** 请按「可用的框架 + 未经实战的组装」看待它。 |
-| **测试证明了什么** | 242 项全离线（公开克隆 240 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权）。它**不验证任何策略的收益**。 |
-| **没有的东西** | 没有券商客户端 —— 仓库里只有 `PaperExecutor`；没有仓库内的 HTTP 投递后端（该方案被否决过，且**没有留空壳接口**：一个不能用的类不是扩展点，是噪音。要加只需实现 `Transport` 的三个方法）；没有 Web UI、没有数据库、没有回测引擎。 |
+| **测试证明了什么** | 256 项全离线（公开克隆 254 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权、两端可拔插）。它**不验证任何策略的收益**。 |
+| **没有的东西** | 没有券商客户端 —— 仓库里只有 `PaperExecutor` 这个**无券商占位**，真执行端你自己接（[怎么接](#换成你自己的执行端)）；**没有第二个 HTTP 投递后端**（那个方案被否决过一次，且**没有留空壳接口**：一个不能用的类不是扩展点，是噪音 —— 内置的 `GistTransport` 本身走的就是 HTTPS，要再加只需实现 `Transport` 的三个方法）；没有 Web UI、没有数据库。 |
+| **不做回测** | 本框架和回测框架是**正交**的，不是竞争关系。把判断写成纯函数 `decide(ctx)`：回测时给 backtrader / qlib 写一层薄适配去调它，实盘时由本框架调**同一个函数**。**策略本体不写两遍 —— 两边各写一次的，是适配层。** 框架里没有回测引擎，也不打算有。 |
 | **单进程假设** | 「单一写入者」是**编码约定 + 运行时断言**，不是分布式锁。真要多进程并发写同一后端，得自己在外面加锁。 |
 | **已知缺口** | 产生端不去重（依赖「同秒同码同向只推一次」，在单进程下成立）。**缺口是写进 [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md) 的，不是悄悄补上的。** |
 
@@ -417,8 +496,10 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 | 文件 | 内容 |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、依赖方向、一轮的完整时序 |
+| [`docs/EXECUTOR_GUIDE.md`](docs/EXECUTOR_GUIDE.md) | **接你自己的执行端**：三个方法的骨架、必须自己包的那两行、以及先拿假行情跑通再上真行情的顺序 |
 | [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md) | **线格式契约**：四个 channel 的字段、后缀、时间格式，以及那些「看起来该统一、实际不能统一」的地方 |
 | [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) | 设计主张与取舍：失效方向、幂等、时间预算、网络韧性 |
+| [`docs/DESIGN_NOTES.en.md`](docs/DESIGN_NOTES.en.md) | 上一份的英文翻译（供不开中文的读者扫读；**有出入以中文版为准**） |
 | [`docs/SANITIZATION.md`](docs/SANITIZATION.md) | 脱敏清单 + 扫描器用法 + **黑名单怎么建** |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | 从「单文件脚本」迁到本框架的路径；也写了**什么时候不该迁** |
 

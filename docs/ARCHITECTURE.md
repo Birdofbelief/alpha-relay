@@ -7,7 +7,7 @@
 
 | 层 | 模块 | 依赖谁 |
 |---|---|---|
-| **L0 叶子**（零包内依赖） | `models` `config` `calendar` `notify` `marketdata/base` `transport/base` | —— |
+| **L0 叶子**（零包内依赖） | `models` `config` `calendar` `notify` `executor` `marketdata/base` `transport/base` | —— |
 | **L1 零件** | `gates` `store` | `models`（+ `transport/base`） |
 | **L1 后端实现** | `marketdata/{cache,online,fake}` `transport/{file,gist,null}` | `base` 家族 |
 | **L2 角色** | `strategy` `paper` | `calendar` / `gates` / `marketdata/base` / `models` / `store` |
@@ -51,6 +51,7 @@ signalchain/
 ├── strategy.py      ★ Strategy 基类 + StrategyContext + 仓库外策略加载
 ├── store.py         四个 channel 的读写门面（含回执索引、队列清理）
 ├── notify.py        通知（Console / ServerChan / 多路复用 / 节流）
+├── executor.py      ★ Executor 协议 —— 接自己执行端的落点（只含契约，无实现）
 ├── paper.py         ★ PaperExecutor —— 本地纸面成交，让闭环在零券商下成立
 ├── runner.py        ★ 调度、时间预算、失败上限、心跳严重度
 └── chain.py         装配（build_chain / build_file_chain）
@@ -123,8 +124,10 @@ tests/                        含 golden 线格式、传输契约、端到端接
 **「谁写」写在代码里**（`transport/base.py` 的 `CHANNEL_OWNERS`），
 `SingleWriterGuard` 在运行期**抛异常**拒绝越权 —— 不是打警告。
 
-理由见 [`DESIGN_NOTES.md`](DESIGN_NOTES.md)：Gist 的 read-modify-write 非原子，
-两个写者同时改同一个文件，后写的**静默**覆盖先写的。
+理由见 [`DESIGN_NOTES.md`](DESIGN_NOTES.md)：**凡是靠 read-modify-write 实现
+「往列表里追加」的存储都不原子**（内置的 `GistTransport` 是一个实例），
+两个写者同时改同一份文档，后写的**静默**覆盖先写的。
+所有权约束因此**不能绑在存储上**，只能绑在角色上 —— 换后端换不掉它。
 
 ### ★ 同一个进程可以同时扮演两端
 
@@ -150,7 +153,9 @@ tests/                        含 golden 线格式、传输契约、端到端接
   └──────────────┘                              └──────────────┘
 ```
 
-四个 channel = 同一个 gist 里的四个文件（`models.py` 的 `CHANNEL_FILENAMES`）。
+四个 channel = **同一处存储里的四个文件**（`models.py` 的 `CHANNEL_FILENAMES`）。
+「同一处存储」具体是什么，由 `Transport` 的实现决定：本地文件、共享盘、对象存储、
+Gist —— 换存储不影响上面这张图，也不影响 channel 的所有权划分。
 **字段级契约**在 [`WIRE_CONTRACT.md`](WIRE_CONTRACT.md) —— 那里才是给消费端看的东西。
 
 ### 读入侧必须宽容，写出侧必须严格
@@ -172,7 +177,7 @@ tests/                        含 golden 线格式、传输契约、端到端接
 | 加一层行情缓存 | 写装饰器包住现有 `MarketData` | 见 `marketdata/cache.py` |
 | 加一道风控 | 写一个 `Gate` 加进 `GateChain` | 策略 |
 | 加一个定时任务 | 往 `schedule` 里追加 `(时刻, 名字)` | 其余全部 |
-| 接真券商 | 换掉 `PaperExecutor` | 产生端一行不动 |
+| 接真券商 | 实现 `Executor` 的三个方法，从 `build_chain(executor=...)` 装进去 | 产生端一行不动 |
 
 **「不用碰」那一列才是这张表的意义。** 每一行它都能被单独验证 ——
 `tests/test_transport_contract.py` 就是「换后端不碰其余」的可执行证据：
@@ -189,9 +194,12 @@ tests/                        含 golden 线格式、传输契约、端到端接
    是「同秒同码同向只推一次」。
 3. **连续失败上限的窗口只有 90 秒**（3 次 × 30 秒）。详见
    [`DESIGN_NOTES.md`](DESIGN_NOTES.md) 第三节。
-4. **没有 HTTP 后端。** 这三个后端就是全部：`FileTransport` / `GistTransport` / `NullTransport`。
+4. **没有第二个 HTTP 投递后端。** 这三个后端就是全部：
+   `FileTransport` / `GistTransport` / `NullTransport` ——
+   注意 `GistTransport` 本身走的就是 HTTPS，所以「本仓库没有 HTTP 后端」是句错话，
+   准确说法是「**没有第二个**」。
    设计早期打算留一个「只有接口、没有实现」的空壳类占位，**它被去掉了** ——
    **一个不能用的类不是扩展点，是噪音**；真正说明「可拔插」的是
    `tests/test_transport_contract.py` 拿同一套用例跑遍**三个真实后端**。
-   HTTP 方案本身被否决过一次（理由见 `DESIGN_NOTES.md` 第六节），
+   再写一个 HTTP 投递后端这件事被否决过一次（理由见 `DESIGN_NOTES.md` 第六节），
    要加也不是不行：实现 `read` / `write` / `describe` 三个方法即可，其余代码一行不动。

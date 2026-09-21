@@ -228,16 +228,20 @@ _COMPONENT_SUFFIXES = (
 _COMPONENT_RE = re.compile(
     r"\b([A-Z][A-Za-z0-9]*(?:" + "|".join(_COMPONENT_SUFFIXES) + r"))\b")
 
-#: **刻意虚构**的名字：只在示例代码里出现，不该存在。
+#: **刻意虚构**的名字：只在示例代码/伪代码里出现，不该存在。
 #: 这份清单要尽量短 —— 每加一条都是在放弃一次检查。
 #: 下面那条测试会验证清单里的名字**仍然真的出现在文档里**，
 #: 免得它退化成一张「什么都放行」的白名单。
-_HYPOTHETICAL = {"MyStrategy"}
+_HYPOTHETICAL = {"MyStrategy", "MyExecutor"}
 
 #: 要检查的文档。代码块的 ASCII 图也算 —— 这正是它被写出来的理由。
 _DOC_FILES = ("README.md", "docs/ARCHITECTURE.md", "docs/DESIGN_NOTES.md",
+              "docs/DESIGN_NOTES.en.md", "docs/EXECUTOR_GUIDE.md",
               "docs/WIRE_CONTRACT.md", "docs/SANITIZATION.md",
               "docs/MIGRATION.md")
+
+#: (原文, 译本) —— 下面那条测试要求同一条目里两边提到的构件名**完全一致**。
+_TRANSLATION_PAIRS = (("docs/DESIGN_NOTES.md", "docs/DESIGN_NOTES.en.md"),)
 
 
 def _repo_root() -> pathlib.Path:
@@ -316,6 +320,40 @@ def test_the_hypothetical_allowlist_has_not_rotted():
     assert not stale, (
         f"豁免清单里的 {sorted(stale)} 已经不在任何文档里了 —— "
         f"删掉它们，否则这张清单会退化成一张「什么都放行」的白名单")
+
+
+# ------------------------------------------------------------
+# ★ 译文不许悄悄漂移
+# ------------------------------------------------------------
+def _components_in(rel: str) -> set[str]:
+    text = (_repo_root() / rel).read_text(encoding="utf-8")
+    return set(_COMPONENT_RE.findall(text))
+
+
+@pytest.mark.parametrize("source,target", _TRANSLATION_PAIRS)
+def test_a_translation_names_the_same_components_as_its_source(source, target):
+    """★ 译文与原文提到的构件名必须**完全一致**。
+
+    这条防的是「改了中文忘了英文」的漂移，而它之所以静默，是因为两边**都读得通**：
+    中文版把 `FooGate` 换成了 `BarGate`，英文版还写着 `FooGate` —— 不会有任何东西变红
+    （上面那个「构件必须存在」的测试甚至会**放行**，因为 `FooGate` 可能还活着），
+    而英文读者会照着一份过期文档去理解当前行为。
+
+    ★ 断言取**相等**而不是「译文 ⊆ 原文」：多出来的构件名同样有害 ——
+    那意味着译文替原文做了一个原文没做的承诺。
+    """
+    src = _components_in(source)
+    dst = _components_in(target)
+    assert src, f"{source} 里一个构件名都没扫到 —— 正则或文件坏了，这条测试白跑"
+
+    missing = sorted(src - dst)
+    extra = sorted(dst - src)
+    assert not missing and not extra, (
+        f"`{source}` 与 `{target}` 提到的构件名对不上：\n"
+        f"  原文有、译文没跟上：{missing}\n"
+        f"  译文有、原文里没有：{extra}\n"
+        f"两边都要改 —— 或者把这一对从 `_TRANSLATION_PAIRS` 里摘掉"
+        f"（摘之前先确认它是否还称得上「译文」）。")
 
 
 # ------------------------------------------------------------
