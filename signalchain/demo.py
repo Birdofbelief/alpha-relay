@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 import sys
 import tempfile
@@ -19,13 +20,14 @@ from datetime import datetime
 from pathlib import Path
 
 from .chain import Chain, build_file_chain
+from .console import emit, force_utf8, setup_logging
 from .models import ACTION_BUY, ACTION_SELL, Signal, to_bare
 
 BANNER = "=" * 74
 
 
 def _hr(title: str) -> None:
-    print(f"\n{BANNER}\n  {title}\n{BANNER}")
+    emit(f"\n{BANNER}\n  {title}\n{BANNER}")
 
 
 def ctx_signal(chain: Chain, now: datetime, code: str, action: str = "buy",
@@ -53,13 +55,13 @@ def _show(chain: Chain, channel: str) -> None:
     name = CHANNEL_FILENAMES.get(channel, f"{channel}.json")
     path = Path(chain.config.channel_dir) / name
     if not path.exists():
-        print(f"  ({name} 尚不存在)")
+        emit(f"  ({name} 尚不存在)")
         return
     data = json.loads(path.read_text(encoding="utf-8"))
     text = json.dumps(data, ensure_ascii=False, indent=2)
     if len(text) > 1400:
         text = text[:1400] + "\n  ...（截断）"
-    print(text)
+    emit(text)
 
 
 def _feed_three_probes(chain: Chain, now: datetime) -> list[str]:
@@ -113,22 +115,22 @@ def _feed_three_probes(chain: Chain, now: datetime) -> list[str]:
     for sig, label in probes:
         chain.runner.stores.signals.append(sig)   # signals 归产生端写
         labels.append(label)
-        print(f"    · {label}")
+        emit(f"    · {label}")
     return labels
 
 
 def run_demo(keep: bool = False, quiet: bool = False) -> int:
     runtime = Path(tempfile.mkdtemp(prefix="signalchain-demo-"))
-    print(f"运行目录：{runtime}")
+    emit(f"运行目录：{runtime}")
 
     _hr("1. 装配链路")
     chain = build_file_chain(runtime, drift=0.002)
-    print(f"  {chain.describe()}")
-    print("\n  说明：行情是 **假数据**（确定性），传输是 **本地文件**，"
+    emit(f"  {chain.describe()}")
+    emit("\n  说明：行情是 **假数据**（确定性），传输是 **本地文件**，"
           "\n        执行端是 **纸面账户**。整条链在这里不碰网络、不要凭据。")
-    print(f"  同时注意 role={chain.config.role}：产生端身份的 guard "
+    emit(f"  同时注意 role={chain.config.role}：产生端身份的 guard "
           f"**写不了 positions/executions**，")
-    print("  即使纸面执行器就在同一个进程里 —— 所有权绑在角色上，不是绑在进程上。")
+    emit("  即使纸面执行器就在同一个进程里 —— 所有权绑在角色上，不是绑在进程上。")
 
     # ★ 上面那句话**真的试一次**，而不是只打印出来。
     # 一段只会打印「我会拦住」的演示，和一个真的会拦住的实现，在终端上
@@ -138,8 +140,8 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
     try:
         chain.guarded_transport.write("positions", {})
     except OwnershipError as e:
-        print(f"\n  → 实测：产生端试写 positions channel ⇒ {type(e).__name__}")
-        print(f"     {e}")
+        emit(f"\n  → 实测：产生端试写 positions channel → {type(e).__name__}")
+        emit(f"     {e}")
     else:
         # 走到这里说明核心不变量已经失效 —— 这条演示的前提不成立了。
         # 不继续演下去：在一堆正常输出里混一句「其实没拦住」，没人会看见。
@@ -150,26 +152,26 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
     now = datetime(2026, 9, 18, 14, 45, 0)
 
     _hr("2. 第一轮：执行端先报持仓 → 产生端决策")
-    print("  顺序很关键：执行端**必须先报持仓**，产生端才可能完成对账。")
-    print("  如果跳过这一步，你会看到下面那条买入信号被闸门拦下。")
+    emit("  顺序很关键：执行端**必须先报持仓**，产生端才可能完成对账。")
+    emit("  如果跳过这一步，你会看到下面那条买入信号被闸门拦下。")
     result, fills = chain.step(now)
-    print(f"\n  → {result.summary()}")
-    print(f"  → 执行端：{fills or '无信号可处理'}")
-    print("\n  写进 signals channel 的内容：")
+    emit(f"\n  → {result.summary()}")
+    emit(f"  → 执行端：{fills or '无信号可处理'}")
+    emit("\n  写进 signals channel 的内容：")
     _show(chain, "signals")
 
     _hr("3. 第二轮：三种回执形态（成交 / 挂单 / 跳过）")
-    print("  纸面执行端的判定顺序：停牌? → 限价是否允许成交? → 资金/持仓是否够?")
-    print("  这一轮**直接喂三条信号**，让三种判定各发生一次 ——")
-    print("  让策略自然产出三种结果是碰运气的：上面那一轮只产出了一条。")
+    emit("  纸面执行端的判定顺序：停牌? → 限价是否允许成交? → 资金/持仓是否够?")
+    emit("  这一轮**直接喂三条信号**，让三种判定各发生一次 ——")
+    emit("  让策略自然产出三种结果是碰运气的：上面那一轮只产出了一条。")
     # ★ 用第二轮的**时刻**造这三条信号，而不是复用第一轮的 now。
     # 幂等键 = 秒 + 代码 + 方向，复用第一轮的秒会让第三条撞上第一轮那条真信号
     # 的 id，被队列当成重复静默丢掉 —— 演示会「少一条回执」而看不出原因。
     later = now.replace(hour=15)
     labels = _feed_three_probes(chain, later)
     result2, fills2 = chain.step(later)
-    print(f"\n  → {result2.summary()}")
-    print(f"  → 执行端：{fills2}")
+    emit(f"\n  → {result2.summary()}")
+    emit(f"  → 执行端：{fills2}")
 
     # ★ 演示自己检查自己：三种判定**都发生了**才算演示成功。
     # 只打印「3 条喂入」而不核对结果，就等于又给了读者一句无证据的声明 ——
@@ -188,23 +190,23 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
             f"演示前提没成立：三种判定里少了 {sorted(want - got)} —— "
             f"喂入 {len(labels)} 条、回执 {fills2}。"
             f"上面每行的预期结果都不可信，所以这里直接停，不把剩下的戏演完。")
-    print(f"  → ✅ 三种判定都发生了（喂入 {len(labels)} 条，回执 "
+    emit(f"  → √ 三种判定都发生了（喂入 {len(labels)} 条，回执 "
           f"{sum(fills2.values())} 条）")
 
-    print("\n  executions channel（回执）—— 注意两种形状的**字段集不一样**：")
+    emit("\n  executions channel（回执）—— 注意两种形状的**字段集不一样**：")
     _show(chain, "executions")
-    print("  ★ 终态（filled / canceled）带 order_id / price / amount，**没有 reason**；")
-    print("    非终态（submitted / skipped）带 reason，**没有 order_id / price / amount**。")
-    print("    同一个数组里的两种互斥形状，按 status 分辨 —— 取错字段不会报错，")
-    print("    只会静默拿到 None 或 0（见 docs/WIRE_CONTRACT.md 第五节）。")
+    emit("  ★ 终态（filled / canceled）带 order_id / price / amount，**没有 reason**；")
+    emit("    非终态（submitted / skipped）带 reason，**没有 order_id / price / amount**。")
+    emit("    同一个数组里的两种互斥形状，按 status 分辨 —— 取错字段不会报错，")
+    emit("    只会静默拿到 None 或 0（见 docs/WIRE_CONTRACT.md 第五节）。")
 
     _hr("4. 持仓回流")
-    print("  执行端把成交后的持仓写回 positions channel，产生端下一轮就能对账：")
+    emit("  执行端把成交后的持仓写回 positions channel，产生端下一轮就能对账：")
     _show(chain, "positions")
 
     _hr("5. 幂等有两层，分开看")
-    print("  队列里那条信号已被终态回执清理掉了，所以下面直接验**第一层**：")
-    print("  拿同一个 Signal 对象往队列里追加两次。")
+    emit("  队列里那条信号已被终态回执清理掉了，所以下面直接验**第一层**：")
+    emit("  拿同一个 Signal 对象往队列里追加两次。")
     probe = chain.runner.stores.signals
     sig = chain.strategy.universe()[0]
     s1 = ctx_signal(chain, now, sig)
@@ -213,16 +215,16 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
     n1 = len(probe.raw())
     probe.append(s1)          # 同一个 id，再写一次
     n2 = len(probe.raw())
-    print(f"\n  追加第 1 次：{n0} → {n1}；追加第 2 次：{n1} → {n2}")
-    print(f"  信号 id = {s1.sig_id}")
-    print("  → 第二次没有增长，说明**队列按 id 去重**。这就是「重试 ≠ 重复下单」的第一层。")
-    print("\n  第二层在执行端：它按 `signal_id` 查历史回执，已成交的静默跳过；")
-    print("  另外还会查「有没有挂着未终态的单」，那是重启后防重复下单的第二道闸。")
-    print("\n  （上面这条人造信号会留在队列里 —— 它没有回执，按清理规则本就不该删。）")
+    emit(f"\n  追加第 1 次：{n0} → {n1}；追加第 2 次：{n1} → {n2}")
+    emit(f"  信号 id = {s1.sig_id}")
+    emit("  → 第二次没有增长，说明**队列按 id 去重**。这就是「重试 ≠ 重复下单」的第一层。")
+    emit("\n  第二层在执行端：它按 `signal_id` 查历史回执，已成交的静默跳过；")
+    emit("  另外还会查「有没有挂着未终态的单」，那是重启后防重复下单的第二道闸。")
+    emit("\n  （上面这条人造信号会留在队列里 —— 它没有回执，按清理规则本就不该删。）")
 
     _hr("6. 闸门：三个闸门的失效方向**故意不一样**")
-    print("  这是整个仓库最值得单独看的一段。闸门与策略无关，而且不靠策略自觉 ——")
-    print("  下面**直接**把一条买入信号喂给闸门链，看不同数据质量下各自的判定。")
+    emit("  这是整个仓库最值得单独看的一段。闸门与策略无关，而且不靠策略自觉 ——")
+    emit("  下面**直接**把一条买入信号喂给闸门链，看不同数据质量下各自的判定。")
     from .gates import DataQuality
 
     buy = ctx_signal(chain, now, chain.strategy.universe()[0], min_shares=100)
@@ -251,73 +253,57 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
         # 于是 `if keep:` 永远为真、临时目录永远不清理。
         # （本文件初版就是这么写的，跑出来才发现。）
         passed = {s.action for s in allowed}
-        verdict = ["买入✅" if "buy" in passed else "买入⛔",
-                   "卖出✅" if "sell" in passed else "卖出⛔"]
+        verdict = ["买入√" if "buy" in passed else "买入×",
+                   "卖出√" if "sell" in passed else "卖出×"]
         note = f"  （{vetoes[0].reason}）" if vetoes else ""
-        print(f"  {label:26s} → {'  '.join(verdict)}{note}")
-    print("\n  （闸门链刻意**不短路**：一条信号同时触发多道时，理由会全部记下 ——"
+        emit(f"  {label:26s} → {'  '.join(verdict)}{note}")
+    emit("\n  （闸门链刻意**不短路**：一条信号同时触发多道时，理由会全部记下 ——"
           "\n    上面每个 case 只制造一个问题，是为了让对应关系清楚。）")
-    print("\n  读法：**行情失效时买卖全停**（价格不可信，任何决策都没意义）；")
-    print("  而**对账失败/辅助数据缺失时只禁买、卖出照常** —— 因为卖错了执行端会")
-    print("  「无该标的持仓」兜住，买错了却会直接变成双持仓。")
-    print("  判据是「哪边错了更疼」，不是「哪边更保守」。一律全停看着安全，")
-    print("  实际会让你在数据小毛病时错过该有的止损。")
+    emit("\n  读法：**行情失效时买卖全停**（价格不可信，任何决策都没意义）；")
+    emit("  而**对账失败/辅助数据缺失时只禁买、卖出照常** —— 因为卖错了执行端会")
+    emit("  「无该标的持仓」兜住，买错了却会直接变成双持仓。")
+    emit("  判据是「哪边错了更疼」，不是「哪边更保守」。一律全停看着安全，")
+    emit("  实际会让你在数据小毛病时错过该有的止损。")
 
     _hr("7. 心跳与最终状态")
     hb = chain.runner.stores.heartbeat.read()
-    print(f"  心跳：last_task={hb.last_task!r} status={hb.status!r}")
-    print("  status 是**严重度阶梯**（alive < positions_stale < error），只升不降、"
+    emit(f"  心跳：last_task={hb.last_task!r} status={hb.status!r}")
+    emit("  status 是**严重度阶梯**（alive < positions_stale < error），只升不降、"
           "\n  跨日复位。监控端按它决定发不发告警，所以「不降级」是接口语义。")
-    print("\n  严重度的映射（见 runner._severity_for）：")
-    print("    行情失效 → error（价格不可信，必须人来处理）")
-    print("    未对账 / 辅助数据缺失 → positions_stale（功能受限但没裸奔）")
-    print("    正常 → alive（只报平安，不改变严重度）")
+    emit("\n  严重度的映射（见 runner._severity_for）：")
+    emit("    行情失效 → error（价格不可信，必须人来处理）")
+    emit("    未对账 / 辅助数据缺失 → positions_stale（功能受限但没裸奔）")
+    emit("    正常 → alive（只报平安，不改变严重度）")
 
-    print(f"\n  最终目录内容：")
+    emit(f"\n  最终目录内容：")
     for p in sorted(Path(chain.config.channel_dir).iterdir()):
-        print(f"    {p.name}  ({p.stat().st_size} 字节)")
+        emit(f"    {p.name}  ({p.stat().st_size} 字节)")
 
     if keep:
-        print(f"\n已保留运行目录：{runtime}")
+        emit(f"\n已保留运行目录：{runtime}")
     else:
         shutil.rmtree(runtime, ignore_errors=True)
-        print("\n运行目录已清理（用 --keep 可保留）")
+        emit("\n运行目录已清理（用 --keep 可保留）")
 
-    print(f"\n{BANNER}")
-    print("  闭环完成：策略 → 闸门 → 信号 → 执行 → 回执 → 持仓回流")
-    print(BANNER)
+    emit(f"\n{BANNER}")
+    emit("  闭环完成：策略 → 闸门 → 信号 → 执行 → 回执 → 持仓回流")
+    emit(BANNER)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     # ------------------------------------------------------------
-    # Windows 上不带 `PYTHONUTF8=1` 时，stdout 的编码是控制台代码页（简体中文机器上
-    # 是 GBK，CI 的 windows-latest 上是 cp1252），而本演示要打印 ✅ / ⛔ / ⇒。
-    # 这些字符不在 GBK 里 ⇒ `print()` 抛 UnicodeEncodeError ⇒ 演示当场崩、退出码 1。
-    #
-    # ★ 实测（2026-09-21，一个干净克隆里，`py -m signalchain.demo`）：崩在
-    #     UnicodeEncodeError: 'gbk' codec can't encode character '⇒'
-    #   而 README 让所有人跑的第一条命令正是它。**本机开发机设了 PYTHONUTF8=1，
-    #   所以这个坑只在「别人 clone 下来在 Windows 上跑」时现形。**
-    #
-    # ★ 这个病 pytest 也抓不到：tests/test_end_to_end.py 那条入口测试用的是
-    #   `run_demo(quiet=True)`，把打印整个关掉了 —— **护栏把失败条件一起关掉了**。
-    #   所以另有一条「起子进程 + 显式摘掉 PYTHONUTF8」的回归测试盯着这里。
-    #
-    # 强制 UTF-8：真控制台上 Python 走 WriteConsoleW 渲染，与代码页无关；
-    # 重定向到管道/文件时，日志也因此是 UTF-8 而不是 GBK。
-    # errors="replace" 是兜底 —— 宁可把一个 emoji 打成 "?"，
-    # **也绝不因为「打印不出来」而崩**。与 tools/sanitize_check.py 顶部同一条纪律。
+    # 为什么入口要掰一次流：见 signalchain/console.py。
+    # 一句话版 —— Windows 上不带 `PYTHONUTF8=1` 时 stdout 是控制台代码页
+    # （简体中文机器上是 GBK，CI 的 windows-latest 上是 cp1252），
+    # 掰成 UTF-8 之后，**重定向到文件/管道的输出才是 UTF-8**，
+    # 而不是一个别人编辑器读成乱码的 GBK 字节流。
     #
     # ★ 刻意放在 main() 内、而不是模块顶层：本模块既是被敲的命令，也是被 import
     #   的测试对象（tests/test_end_to_end.py 直接调 run_demo）。库不该在 import
     #   时劫持宿主的 stdout 编码。
     # ------------------------------------------------------------
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):   # 不是 TextIOWrapper（被别的工具包过 / 已关闭）
-            pass
+    force_utf8()
 
     parser = argparse.ArgumentParser(
         prog="signalchain.demo",
@@ -328,13 +314,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="只输出演示内容，不输出日志")
     args = parser.parse_args(argv)
 
-    if not args.quiet:
-        import logging
-        logging.basicConfig(level=logging.INFO,
-                            format="%(levelname)-7s %(message)s")
-    else:
-        import logging
+    if args.quiet:
         logging.disable(logging.CRITICAL)
+    else:
+        # 内部：先掰流、再管 handler（含「你已经自己 basicConfig 过」的情形）。
+        setup_logging()
     return run_demo(keep=args.keep, quiet=args.quiet)
 
 

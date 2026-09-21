@@ -123,7 +123,7 @@ class CachedMarketData:
                     f"{code}: 在线获取失败且无可用缓存"
                     + (f"（缓存问题：{'; '.join(cache_problems)}）" if cache_problems else ""))
             self.stats["fallback"] += 1
-            log.warning("📦 %s 在线获取失败，退回缓存（落后 %s 个交易日）", code, behind)
+            log.warning("◆ %s 在线获取失败，退回缓存（落后 %s 个交易日）", code, behind)
 
         # 走到这里 = 用了缓存。必须过新鲜度闸门。
         return self._accept_cached(code, cached, behind)
@@ -133,19 +133,19 @@ class CachedMarketData:
         try:
             raw = self.inner.history(code, bars)
         except Exception as e:  # noqa: BLE001 - 取失败是预期内情况
-            log.warning("📦 %s 在线历史获取失败: %s", code, e)
+            log.warning("◆ %s 在线历史获取失败: %s", code, e)
             return None
 
         frame, problems = validate_history(raw)
         if frame.empty:
-            log.warning("📦 %s 在线历史全部非法，丢弃：%s", code, "; ".join(problems))
+            log.warning("◆ %s 在线历史全部非法，丢弃：%s", code, "; ".join(problems))
             return None
 
         jump = detect_adjustment_jump(frame)
         if jump:
             # 不缓存、不返回 —— 一份未复权的序列会造出凭空的趋势破位。
             self.stats["rejected"] += 1
-            log.error("📦 %s 复权异常，拒用该数据：%s", code, jump)
+            log.error("◆ %s 复权异常，拒用该数据：%s", code, jump)
             return None
 
         # ★ 先丢掉未收盘的那根，**再**落盘。
@@ -172,7 +172,7 @@ class CachedMarketData:
 
         if behind == STALE_WARN:
             self.stats["stale_used"] += 1
-            log.warning("📦 %s 使用落后 %d 个交易日的缓存（可用但需留意）", code, behind)
+            log.warning("◆ %s 使用落后 %d 个交易日的缓存（可用但需留意）", code, behind)
         else:
             self.stats["hit"] += 1
         return self._drop_unclosed(frame, datetime.now())
@@ -238,7 +238,7 @@ class CachedMarketData:
             meta_tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
             os.replace(meta_tmp, meta_path)
         except Exception as e:  # noqa: BLE001 - 写缓存失败不影响本轮
-            log.warning("📦 %s 缓存写入失败（不影响本轮）: %s", code, e)
+            log.warning("◆ %s 缓存写入失败（不影响本轮）: %s", code, e)
 
     # ---------------- 未收盘 K 线 ----------------
 
@@ -259,7 +259,7 @@ class CachedMarketData:
             mask = pd.to_datetime(dates).dt.date < today
         dropped = int((~mask).sum())
         if dropped:
-            log.debug("📦 丢弃 %d 根未收盘 K 线", dropped)
+            log.debug("◆ 丢弃 %d 根未收盘 K 线", dropped)
         return frame[mask].reset_index(drop=True)
 
     # ---------------- 观测 ----------------

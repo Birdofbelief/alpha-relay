@@ -223,7 +223,7 @@ class StrategyContext:
         try:
             return self.history(code, bars)
         except MarketDataError as e:
-            self.log.warning("📉 %s 历史不可用，本轮排除该标的: %s", code, e)
+            self.log.warning("▼ %s 历史不可用，本轮排除该标的: %s", code, e)
             return None
 
     # ---------------- 时间 ----------------

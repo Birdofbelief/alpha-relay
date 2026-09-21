@@ -190,7 +190,7 @@ class PaperExecutor:
                 # 已被消化 —— 幂等，静默跳过。这正是确定性 signal_id 的价值。
                 continue
             if sig.sig_id in open_orders:
-                log.info("⏳ %s 已有挂单，不重复下单", sig.sig_id)
+                log.info("● %s 已有挂单，不重复下单", sig.sig_id)
                 continue
 
             execution = self._try_fill(sig, now)

@@ -198,7 +198,7 @@ class PositionStore:
         try:
             return PositionSnapshot.from_dict(payload)
         except WireFormatError as e:
-            log.error("⛔ 持仓格式认不出，按对账失败处理（不是当成空仓）: %s", e)
+            log.error("× 持仓格式认不出，按对账失败处理（不是当成空仓）: %s", e)
             return None
 
     def write(self, snapshot: PositionSnapshot) -> bool:

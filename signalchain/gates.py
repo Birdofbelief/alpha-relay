@@ -186,5 +186,5 @@ class GateChain:
         allowed = [s for s in signals if id(s) not in vetoed_ids]
 
         for v in vetoes:
-            log.warning("⛔ 闸门拦下信号 %s", v)
+            log.warning("× 闸门拦下信号 %s", v)
         return allowed, vetoes

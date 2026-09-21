@@ -77,17 +77,17 @@ class TradingCalendar:
         except Exception as e:  # noqa: BLE001 - 加载失败是预期内情况
             self._refresh_failures += 1
             if self._days:
-                log.error("🗓️ 交易日历刷新失败，**保留旧缓存**（%d 天，覆盖到 %s）: %s",
+                log.error("◇ 交易日历刷新失败，**保留旧缓存**（%d 天，覆盖到 %s）: %s",
                           len(self._days), max(self._days), e)
             else:
-                log.error("🗓️ 交易日历刷新失败且**无旧缓存可用**，"
+                log.error("◇ 交易日历刷新失败且**无旧缓存可用**，"
                           "is_trading_day 将保守地返回 False（宁可不动，不可乱动）: %s", e)
             return False
 
         if not days:
             # 空结果与异常同等对待 —— 都是「没拿到」，都不能用来覆盖好数据。
             self._refresh_failures += 1
-            log.error("🗓️ 交易日历刷新返回空，保留旧缓存（%s）",
+            log.error("◇ 交易日历刷新返回空，保留旧缓存（%s）",
                       f"{len(self._days)} 天" if self._days else "无")
             return False
 
@@ -96,7 +96,7 @@ class TradingCalendar:
         self._last_refresh = datetime.now()
         self._refresh_failures = 0
         if not initial:
-            log.info("🗓️ 交易日历已刷新：%d 天，覆盖 %s",
+            log.info("◇ 交易日历已刷新：%d 天，覆盖 %s",
                      len(self._days), sorted(self._years))
         return True
 

@@ -125,7 +125,7 @@ class _AtomicState:
         except (OSError, json.JSONDecodeError) as e:
             # 状态文件损坏时**不抛** —— 丢掉状态重启，好过让进程起不来。
             # 代价是当天可能重复执行任务，这个代价在日志里明确记下来。
-            log.error("⚠️ 状态文件损坏，将以空状态启动（当天任务可能重复执行）: %s", e)
+            log.error("! 状态文件损坏，将以空状态启动（当天任务可能重复执行）: %s", e)
             return {}
 
     def save(self) -> None:
@@ -236,7 +236,7 @@ class Runner:
             removed = self.stores.signals.prune(
                 self.stores.executions.index(), now.strftime("%Y-%m-%d"))
             if removed:
-                log.info("🧹 队列清理 %d 条", removed)
+                log.info("○ 队列清理 %d 条", removed)
 
             self.strategy.on_finish(ctx, result)
             self._persist_strategy_state()
@@ -245,7 +245,7 @@ class Runner:
             raise
         except Exception as e:  # noqa: BLE001 - 单轮失败不该杀进程
             result.error = f"{type(e).__name__}: {e}"
-            log.error("❌ 本轮任务失败: %s", result.error, exc_info=True)
+            log.error("× 本轮任务失败: %s", result.error, exc_info=True)
         finally:
             result.elapsed = time.monotonic() - started
             if ctx is not None:
@@ -287,7 +287,7 @@ class Runner:
         except Exception as e:  # noqa: BLE001 - 行情整体拿不到 → 判失效
             ctx.data.quote_ok = False
             ctx.data.quote_failed_codes = list(self.strategy.universe())
-            log.error("🚫 行情获取整体失败: %s", e)
+            log.error("× 行情获取整体失败: %s", e)
 
         # 2) 持仓对账（执行端是唯一真相源）
         self._sync_positions(ctx)
@@ -315,7 +315,7 @@ class Runner:
         # 这里仍判「已对账」。「新鲜度」是可观测的（snapshot.updated_at），
         # 把它纳入判定会更保守，但也会在正常场景下误伤，
         # 所以留作使用者按自己的执行端可靠性决定。
-        log.info("📋 持仓对账成功：%d 只持仓标的，快照时间 %s",
+        log.info("◆ 持仓对账成功：%d 只持仓标的，快照时间 %s",
                  len(snapshot.held_codes()),
                  snapshot.updated_at.strftime("%Y-%m-%d %H:%M:%S")
                  if snapshot.updated_at else "未知")
@@ -331,7 +331,7 @@ class Runner:
                 res = src.fetch(ctx)
             except Exception as e:  # noqa: BLE001 - 取数失败按失败处理，不上抛
                 res = AuxResult(name=src.name, error=f"{type(e).__name__}: {e}")
-                log.error("🚫 辅助数据 %s 获取异常: %s", src.name, e)
+                log.error("× 辅助数据 %s 获取异常: %s", src.name, e)
             results.append(res)
             if res.ok:
                 ctx.aux[res.name] = res.values
@@ -492,7 +492,7 @@ class Runner:
 
         for at, name, overdue in self.due_tasks(now):
             if overdue:
-                log.info("⏭️ %s（计划 %s）已超过补执行窗口 %d 分钟，跳过",
+                log.info("▲ %s（计划 %s）已超过补执行窗口 %d 分钟，跳过",
                          name, at, self.catchup_minutes)
                 # ★ 超窗的「跳过」也必须落盘，否则每 30 秒重新判一次、日志刷屏
                 self.state.mark_executed(day, name)
@@ -504,7 +504,7 @@ class Runner:
                 self.state.mark_executed(day, name)
                 continue
 
-            log.info("⏰ 触发任务 %s（计划 %s，实际 %s）",
+            log.info("△ 触发任务 %s（计划 %s，实际 %s）",
                      name, at, now.strftime("%H:%M"))
             try:
                 outcome = fn(now)
@@ -513,16 +513,16 @@ class Runner:
                 self._fail_count[name] = 0
                 self.state.mark_executed(day, name)
                 self.beat(name)
-                log.info("✅ %s 完成", name)
+                log.info("√ %s 完成", name)
             except Exception as e:  # noqa: BLE001
                 fails = self._fail_count.get(name, 0) + 1
                 self._fail_count[name] = fails
-                log.error("❌ %s 异常（第 %d 次）: %s", name, fails, e, exc_info=True)
+                log.error("× %s 异常（第 %d 次）: %s", name, fails, e, exc_info=True)
                 self.beat(f"{name}_ERROR", "error")
                 if fails >= self.fail_limit:
                     # 放弃当天。**显式记下来** —— 静默放弃等于没人知道它没跑
                     self.state.mark_executed(day, name)
-                    log.error("⛔ %s 连续失败 %d 次，放弃今日补执行，"
+                    log.error("× %s 连续失败 %d 次，放弃今日补执行，"
                               "心跳置 error 等人工排查", name, fails)
         return results
 
@@ -538,7 +538,7 @@ class Runner:
         self.state.data["current_day"] = day
         self._fail_count.clear()
         if self.calendar.needs_new_year_refresh(now.date()):
-            log.info("🗓️ 进入 %s，刷新交易日历（跨年必须刷新，否则会静默停摆）", day)
+            log.info("◇ 进入 %s，刷新交易日历（跨年必须刷新，否则会静默停摆）", day)
             self.calendar.refresh()
         self.state.save()
 
@@ -555,13 +555,13 @@ class Runner:
                     continue
 
                 for r in self.run_due(now):
-                    log.info("📊 %s", r.summary())
+                    log.info("◆ %s", r.summary())
 
                 self.notify_filled()
             except Exception as e:  # noqa: BLE001
                 # 【最外层兜底】任何意外都不得杀进程。带着错误活着 > 干脆死去，
                 # 因为前者还有心跳、还能被人看见。见模块文档第 5 条。
-                log.error("❌ 主循环兜底异常（已捕获，继续运行）: %s", e, exc_info=True)
+                log.error("× 主循环兜底异常（已捕获，继续运行）: %s", e, exc_info=True)
                 self.beat("mainloop_ERROR", "error")
 
             loops += 1

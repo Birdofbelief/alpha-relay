@@ -41,11 +41,17 @@
 
 作为库用：
 
-    from signalchain import build_file_chain
+    from signalchain import build_file_chain, setup_logging
 
+    setup_logging()                         # 入口第一行：掰 UTF-8 + 配日志
     chain = build_file_chain("./runtime")   # 文件后端 + 假行情 + 纸面执行器
     result, fills = chain.step()            # 执行端先报持仓 → 决策 → 闸门 → 投递 → 回执
     print(result.summary())
+
+★ `setup_logging()` 该**由你的入口调用**，库本身不会在 import 时动你的流。
+  不调也能跑（`emit()` 永不抛异常），代价是重定向出去的日志不是 UTF-8、
+  而 `logging` 遇到编不出的字符会**静默丢掉那一行**并打一段噪音。
+  理由见 `signalchain/console.py`。
 
 换成你自己的策略 —— **策略文件放仓库外，永不入库**：
 
@@ -60,6 +66,7 @@ __version__ = "0.1.0"
 
 from .calendar import TradingCalendar, make_static_calendar, weekday_calendar
 from .chain import Chain, build_chain, build_file_chain
+from .console import emit, force_utf8, setup_logging
 from .executor import Executor
 from .gates import (
     AuxDataGate,
@@ -131,4 +138,6 @@ __all__ = [
     # 其余
     "Stores", "Notifier", "NullNotifier", "ConsoleNotifier",
     "MultiNotifier", "NotifyThrottle",
+    # 输出 —— 入口第一行该调的那个
+    "setup_logging", "force_utf8", "emit",
 ]

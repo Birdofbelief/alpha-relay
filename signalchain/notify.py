@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from typing import Protocol
+from .console import emit
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class ConsoleNotifier:
     """打到标准输出。演示与本地调试用。"""
 
     def send(self, title: str, body: str) -> bool:
-        print(f"\n=== {title} ===\n{body}\n")
+        emit(f"\n=== {title} ===\n{body}\n")
         return True
 
 

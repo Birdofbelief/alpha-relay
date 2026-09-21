@@ -113,7 +113,7 @@ def _build_transport(config: Config) -> Transport:
     if kind == "gist":
         from .transport.gist import GistTransport
         if not (config.gist_id and config.github_token):
-            log.error("⛔ 配置为 gist 后端但凭据不全，**降级为文件后端**（不带着空凭据发请求）")
+            log.error("× 配置为 gist 后端但凭据不全，**降级为文件后端**（不带着空凭据发请求）")
             return FileTransport(config.channel_dir)
         return GistTransport.from_env()
     if kind == "null":
@@ -157,7 +157,7 @@ def build_chain(
 
     problems = config.validate()
     for p in problems:
-        log.warning("⚠️ 配置问题: %s", p)
+        log.warning("! 配置问题: %s", p)
 
     # 策略：显式传入 > 配置里的路径 > 内置示例
     if strategy is None:
@@ -169,7 +169,7 @@ def build_chain(
     if calendar is None:
         calendar = TradingCalendar()
         if not calendar.load():
-            log.error("🗓️ 交易日历加载失败，本进程将**保守地判定所有日期为非交易日**。"
+            log.error("◇ 交易日历加载失败，本进程将**保守地判定所有日期为非交易日**。"
                       "要么修好日历源，要么显式传入一个 calendar。")
 
     # 行情：显式传入 > 在线（重试 + 缓存）

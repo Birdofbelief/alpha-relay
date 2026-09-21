@@ -167,7 +167,7 @@ class OnlineMarketData:
             return df
         if age > self.max_snapshot_age:
             self.stats["stale_snapshot_drops"] += 1
-            log.warning("🚫 现有行情快照已过期（%.0f 秒前，上限 %.0f），不使用",
+            log.warning("× 现有行情快照已过期（%.0f 秒前，上限 %.0f），不使用",
                         age, self.max_snapshot_age)
             self._snapshot = None
         return None
@@ -257,7 +257,7 @@ class OnlineMarketData:
         prev = self.sources.get(code)
         if prev is not None and prev != source:
             # 复权基准变了 —— 新旧序列不能拼接。缓存层会据此丢弃旧缓存。
-            log.warning("📐 %s 复权来源发生变化：%s → %s，历史序列不可拼接",
+            log.warning("◇ %s 复权来源发生变化：%s → %s，历史序列不可拼接",
                         code, prev, source)
         self.sources[code] = source
 
@@ -326,10 +326,10 @@ class RetryingMarketData:
             if deadline is not None and datetime.now() + \
                     timedelta(seconds=self.interval) >= deadline:
                 self.stats["aborted"] += 1
-                log.error("⛔ 已到行情重试截止时间（%s），停止重试，用当前结果继续",
+                log.error("× 已到行情重试截止时间（%s），停止重试，用当前结果继续",
                           deadline.strftime("%H:%M"))
                 break
-            log.warning("⚠️ 实时行情不完整（%s），%.0f 秒后重试（第 %d/%d 次）",
+            log.warning("! 实时行情不完整（%s），%.0f 秒后重试（第 %d/%d 次）",
                         batch.problems(), self.interval, attempt, self.attempts)
             time.sleep(self.interval)
             self.stats["retries"] += 1
@@ -337,7 +337,7 @@ class RetryingMarketData:
             if batch.ok:
                 return batch
 
-        log.error("🚫 重试 %d 次后行情仍不完整：%s", self.attempts, batch.problems())
+        log.error("× 重试 %d 次后行情仍不完整：%s", self.attempts, batch.problems())
         return batch
 
     def history(self, code: str, bars: int) -> pd.DataFrame:
@@ -348,7 +348,7 @@ class RetryingMarketData:
             except MarketDataError as e:
                 last = e
                 if attempt < self.attempts:
-                    log.warning("⚠️ %s 历史获取失败，%.0f 秒后重试: %s",
+                    log.warning("! %s 历史获取失败，%.0f 秒后重试: %s",
                                 code, self.interval, e)
                     time.sleep(self.interval)
                     self.stats["retries"] += 1
