@@ -290,6 +290,35 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ------------------------------------------------------------
+    # Windows 上不带 `PYTHONUTF8=1` 时，stdout 的编码是控制台代码页（简体中文机器上
+    # 是 GBK，CI 的 windows-latest 上是 cp1252），而本演示要打印 ✅ / ⛔ / ⇒。
+    # 这些字符不在 GBK 里 ⇒ `print()` 抛 UnicodeEncodeError ⇒ 演示当场崩、退出码 1。
+    #
+    # ★ 实测（2026-09-21，一个干净克隆里，`py -m signalchain.demo`）：崩在
+    #     UnicodeEncodeError: 'gbk' codec can't encode character '⇒'
+    #   而 README 让所有人跑的第一条命令正是它。**本机开发机设了 PYTHONUTF8=1，
+    #   所以这个坑只在「别人 clone 下来在 Windows 上跑」时现形。**
+    #
+    # ★ 这个病 pytest 也抓不到：tests/test_end_to_end.py 那条入口测试用的是
+    #   `run_demo(quiet=True)`，把打印整个关掉了 —— **护栏把失败条件一起关掉了**。
+    #   所以另有一条「起子进程 + 显式摘掉 PYTHONUTF8」的回归测试盯着这里。
+    #
+    # 强制 UTF-8：真控制台上 Python 走 WriteConsoleW 渲染，与代码页无关；
+    # 重定向到管道/文件时，日志也因此是 UTF-8 而不是 GBK。
+    # errors="replace" 是兜底 —— 宁可把一个 emoji 打成 "?"，
+    # **也绝不因为「打印不出来」而崩**。与 tools/sanitize_check.py 顶部同一条纪律。
+    #
+    # ★ 刻意放在 main() 内、而不是模块顶层：本模块既是被敲的命令，也是被 import
+    #   的测试对象（tests/test_end_to_end.py 直接调 run_demo）。库不该在 import
+    #   时劫持宿主的 stdout 编码。
+    # ------------------------------------------------------------
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):   # 不是 TextIOWrapper（被别的工具包过 / 已关闭）
+            pass
+
     parser = argparse.ArgumentParser(
         prog="signalchain.demo",
         description="signal-chain 端到端演示（零凭据、零网络）")

@@ -18,6 +18,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +43,8 @@ from signalchain.models import (
 from signalchain.strategy import Strategy
 
 from .conftest import CLEAN_CODES, FIXED_NOW
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _read(chain, channel: str):
@@ -265,3 +271,37 @@ def test_demo_entry_point_returns_zero(tmp_path):
     import signalchain.demo as demo
 
     assert demo.run_demo(keep=False, quiet=True) == 0
+
+
+def test_documented_command_survives_a_non_utf8_console(tmp_path):
+    """★ 文档里那条命令，必须在一个**不是 UTF-8 的 stdout** 下也能跑完。
+
+    上面那条入口测试证明不了这件事，而且它的盲区很典型：
+
+      - 它用 `run_demo(quiet=True)`，把**日志**关掉了 —— 但真正崩的是
+        `run_demo` 里的**演示内容打印**（那条 `⇒` 不在 GBK 里）。
+      - 它在本进程内调用，而 pytest 捕获 stdout 用的是 UTF-8 ⇒ **进程内怎么调都不复现**。
+      - 开发机设了 `PYTHONUTF8=1` ⇒ 让环境顺着漏进来，这条测试在本机**永远绿**，
+        而「别人 clone 下来在 Windows 上跑」照样崩。
+
+    ⇒ 所以这条必须**起子进程**，并且**显式摘掉 PYTHONUTF8 / PYTHONIOENCODING**。
+    实测形状（2026-09-21，干净克隆、未修复前）：
+        `py -m signalchain.demo`（本机 Git Bash，或重定向到文件）
+        → UnicodeEncodeError: 'gbk' codec can't encode character '⇒' → 退出码 1
+    详见 signalchain/demo.py 里 main() 顶部那段。
+    """
+    # 优先用文档里写的那条命令本身（`py`），拿不到就退回当前解释器 ——
+    # 免得在没有 py 启动器的机器上整条跳过，让护栏变成摆设。
+    launcher = shutil.which("py") or sys.executable
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    proc = subprocess.run(
+        [launcher, "-m", "signalchain.demo", "--quiet"],
+        capture_output=True, encoding="utf-8", errors="replace",
+        cwd=str(REPO_ROOT), env=env)
+
+    assert proc.returncode == 0, (
+        f"退出码 {proc.returncode} —— 文档里那条命令在非 UTF-8 的 stdout 下崩了。\n"
+        f"stdout={proc.stdout[-2000:]!r}\nstderr={proc.stderr[-2000:]!r}")
+    assert proc.stdout.strip(), (
+        "零输出 = 和「通过」无法区分。演示不许有安静的失效路径。")
