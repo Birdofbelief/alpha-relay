@@ -42,7 +42,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests pandas pytest
 
-      - name: 跑测试（242 项，全离线）
+      # ★ 步骤名里**不写测试条数** —— 手写的数字会随代码漂移，而这里写错了
+      # 没人会红（步骤名不参与断言）。条数以实测为准，README「跑测试」一节
+      # 也只把它当参考值。
+      - name: 跑测试（全离线，不需要任何凭据）
         run: python -m pytest
 
       # 脱敏扫描也进 CI：本地那个 pre-commit 钩子靠 core.hooksPath，
