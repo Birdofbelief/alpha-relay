@@ -13,7 +13,7 @@
 持仓对账、调度、心跳、告警，全部由链路负责。
 
 **投递通道可拔插**（本地文件 / Gist / 空实现 / 你自己实现的任意存储），
-**执行端也可拔插** —— 接你自己的券商终端（miniQMT 这类本地客户端，或你自己写的适配层）。
+**执行端也可拔插** —— 接你自己的券商终端（ptrade / miniQMT 这类客户端，或你自己写的适配层）。
 策略从**仓库外路径**加载：**你的 alpha 不进这个仓库，也不进券商平台。**
 
 ```
@@ -26,9 +26,9 @@
 > delivery, retries, execution receipts, position reconciliation, scheduling, heartbeats
 > and alerting.
 > **Both ends are pluggable**: the delivery channel (local file / GitHub Gist / null /
-> any store you implement) and the executor (wire up your own broker terminal — miniQMT
-> and the like, or an adapter layer you write yourself). Strategies are loaded from paths
-> outside this repository, so
+> any store you implement) and the executor (wire up your own broker terminal — ptrade,
+> miniQMT and the like, or an adapter layer you write yourself). Strategies are loaded
+> from paths outside this repository, so
 > **your alpha never enters this repo, and never enters the broker's platform either.**
 > The chain runs end to end with **zero credentials, zero network and zero broker**:
 > `py -m signalchain.demo`. Design notes and reference docs are written in Chinese;
