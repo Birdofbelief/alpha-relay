@@ -1,0 +1,39 @@
+# signal-chain
+#
+# 打包配置刻意保持最小：这个项目的使用方式是「clone 下来直接跑」，
+# 而不是「pip install 成一个依赖」。所以没有 entry_points、没有 console_scripts。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signal-chain"
+version = "0.1.0"
+description = "策略与信号链路解耦的可插拔框架：策略只写 decide()，链路负责取数、闸门、投递、回执、对账"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# 运行时依赖只有两个。这不是巧合，是设计约束：
+#   - 行情走的是腾讯/新浪的公开 HTTP 接口（requests 足够），**不需要** akshare
+#   - 数据处理只用 pandas
+# akshare 体积大、依赖重、且接口常年变，只在「需要交易日历」时才是必需的 ——
+# 所以它被放进可选依赖，而不是主依赖。
+dependencies = [
+    "requests>=2.28",
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+# 只有 TradingCalendar.refresh() 需要它。不装也能跑 —— 用静态日历或内置周末日历。
+calendar = ["akshare>=1.10"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["signalchain*"]
+
+[tool.pytest.ini_options]
+# 让 `py -m pytest` 在仓库根直接跑得起来，不需要 pip install -e .
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"

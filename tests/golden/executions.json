@@ -1,0 +1,20 @@
+[
+  {
+    "signal_id": "20260918144500_510050.XSHG_buy",
+    "code": "510050.XSHG",
+    "action": "buy",
+    "status": "filled",
+    "order_id": "PAPER-1",
+    "price": 1.2346,
+    "amount": 1000,
+    "time": "2026-09-18 14:45:00"
+  },
+  {
+    "signal_id": "20260918144500_159919.XSHE_sell",
+    "code": "159919.XSHE",
+    "action": "sell",
+    "status": "submitted",
+    "reason": "市价低于限价，挂单等待",
+    "time": "2026-09-18 14:45:00"
+  }
+]

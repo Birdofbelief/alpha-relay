@@ -1,0 +1,22 @@
+[
+  {
+    "id": "20260918144500_510050.XSHG_buy",
+    "code": "510050.XSHG",
+    "action": "buy",
+    "amount": 1000,
+    "price": 1.2346,
+    "time": "2026-09-18 14:45:00",
+    "signal_type": "demo_entry",
+    "processed": false
+  },
+  {
+    "id": "20260918144500_159919.XSHE_sell",
+    "code": "159919.XSHE",
+    "action": "sell",
+    "amount": 0,
+    "price": 3.5,
+    "time": "2026-09-18 14:45:00",
+    "signal_type": "demo_exit",
+    "processed": false
+  }
+]

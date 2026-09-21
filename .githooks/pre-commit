@@ -1,0 +1,29 @@
+#!/bin/sh
+# ============================================================
+# pre-commit：公开前的门禁。
+#
+# 为什么在提交时拦而不是在推送时拦：
+#   token 一旦进了 git 历史，删掉文件也擦不掉 —— 必须重写历史或吊销凭据。
+#   在 commit 这一刻拦住，是唯一「反悔成本为零」的时机。
+#
+# 安装：git config core.hooksPath .githooks
+# 绕过（仅在确认误报时）：git commit --no-verify
+#
+# ⚠️ 调用方式必须是 `py tools/sanitize_check.py`，不能写成 `./tools/sanitize_check.py`
+#    或给那个脚本加 shebang —— 详见 tools/sanitize_check.py 末尾关于「看不见的失效」。
+#    本钩子曾经因为一个 shebang 而**每次都拦住提交并指控有凭据泄漏**。
+# ============================================================
+
+echo "[pre-commit] 脱敏扫描（暂存区）..."
+py tools/sanitize_check.py --staged
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo ""
+    echo "⛔ 提交被拒绝：暂存区存在凭据或私有策略指纹。"
+    echo "   处理方式见 docs/SANITIZATION.md。"
+    echo "   确认是误报才用：git commit --no-verify"
+    exit 1
+fi
+
+exit 0
