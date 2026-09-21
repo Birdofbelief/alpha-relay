@@ -252,7 +252,7 @@ def test_position_store_round_trip(executor):
     back = store.read()
     assert back.total_value == 1000.0
     assert back.bare_codes == [CLEAN_CODES[0]]
-    # 内部规范形式是聚宽后缀；落盘写的是 PT 后缀（见 models.to_pt）。
+    # 内部规范形式是聚宽后缀；落盘写的是券商端后缀（见 models.to_pt）。
     assert back.held_codes() == [f"{CLEAN_CODES[0]}.XSHG"]
 
 

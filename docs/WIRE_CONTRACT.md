@@ -115,7 +115,7 @@ datetime.strptime(last_time, '%Y-%m-%d %H:%M:%S')   # ← 唯一的硬解析器
 |---|---|---|
 | `signals[].code`、`signals[].id` | JQ 形式 | `510050.XSHG` / `159919.XSHE` |
 | `executions[].code` | JQ 形式 | `510050.XSHG` |
-| **`positions.positions` 的键** | **PT 形式** | `510050.SS` / `159919.SZ` |
+| **`positions.positions` 的键** | **券商端形式** | `510050.SS` / `159919.SZ` |
 
 **原因**：`positions` 的键是执行端**直接从券商 SDK 的持仓字典里原样取出来写的**，
 那是券商自己的写法。产生端读回来时转换即可，但**写出去的那份字节必须是券商形式** ——

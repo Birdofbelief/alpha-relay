@@ -251,11 +251,11 @@ def test_key_order_is_part_of_the_contract():
 def test_positions_keys_use_broker_suffix_and_executions_use_jq_suffix():
     """**这两个 channel 的后缀不一样，而且必须继续不一样。**
 
-        positions 的 key  → `.SS` / `.SZ`     （券商端 形式）
+        positions 的 key  → `.SS` / `.SZ`     （券商端形式）
         executions 的 code → `.XSHG` / `.XSHE`（聚宽形式）
 
     成因是执行端两边写法不同：`positions` 直接遍历券商持仓字典并把 key
-    原样写出去（那些 key 本来就是 PT 形式），而 `executions` 每个写点都
+    原样写出去（那些 key 本来就是券商端形式），而 `executions` 每个写点都
     显式转换过一次。
 
     ★ 这条测试的形式本身就是重点：**两条断言必须分开写**。
@@ -269,13 +269,13 @@ def test_positions_keys_use_broker_suffix_and_executions_use_jq_suffix():
 
     snap = PositionSnapshot(positions={f"{CLEAN_CODES[0]}.XSHG": {"amount": 1}})
     key = next(iter(snap.to_dict()["positions"]))
-    assert key.endswith(".SS"), f"positions 的 key 必须是 PT 形式，实际 {key!r}"
+    assert key.endswith(".SS"), f"positions 的 key 必须是券商端形式，实际 {key!r}"
 
 
 def test_both_suffix_conventions_survive_a_round_trip():
-    """两套后缀都要能原样走一个来回 —— 落盘写 PT、读回归一。
+    """两套后缀都要能原样走一个来回 —— 落盘写券商端、读回归一。
 
-    内部统一成聚宽形式（与 `Signal.code` 一致），线格式写 PT 形式（与线上一致），
+    内部统一成聚宽形式（与 `Signal.code` 一致），线格式写券商端形式（与线上一致），
     转换只发生在 `to_dict`/`from_dict` 这一对里。
     """
     for bare, jq, pt in ((CLEAN_CODES[0], ".XSHG", ".SS"),
@@ -374,7 +374,7 @@ def test_heartbeat_reader_tolerates_legacy_microsecond_values():
 def test_positions_decodes_all_three_wire_shapes_identically():
     """三种形态解码结果必须一致（线上确实三种都出现过）。
 
-      A 包装 dict ／ B 裸 dict ／ C 旧的 list（券商端 老版本遗留）
+      A 包装 dict ／ B 裸 dict ／ C 旧的 list（执行端老版本遗留）
 
     形态 C 的存在本身就说明线上曾经换过格式 —— 所以兼容不是防御性编程。
     """

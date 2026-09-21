@@ -72,16 +72,16 @@ def to_bare(code: str) -> str:
 
 
 def to_pt(code: str) -> str:
-    """带后缀 → 券商端 形式（`.SS`/`.SZ`）。**这是 `positions` channel 的线格式。**
+    """带后缀 → 券商端形式（`.SS`/`.SZ`）。**这是 `positions` channel 的线格式。**
 
-    ★ 同一个 gist 里，两个 channel 用**两套不同的后缀**，这是实测出来的：
+    ★ 同一条链上，两个 channel 用**两套不同的后缀**，这是实测出来的：
 
         signals / executions 的 code  → `.XSHG`/`.XSHE`（聚宽形式）
-        positions 的 key              → `.SS`/`.SZ`（券商端 形式，无转换直写）
+        positions 的 key              → `.SS`/`.SZ`（券商端形式，无转换直写）
 
-    `positions` 之所以是 PT 形式，是因为执行端直接遍历
-    `context.portfolio.positions.items()` 并把 key 原样写出去 —— 那些 key 本来
-    就是 券商端 的写法。而 `executions` 侧每个写点都显式过了一次转换。
+    `positions` 之所以是券商端形式，是因为执行端是**把自己的持仓字典原样
+    序列化写出去**的 —— 那些 key 用的是它自己 SDK 的写法。而 `executions`
+    侧每个写点都显式过了一次转换。
 
     **不要「顺手统一」这两套后缀。** 统一看起来是整洁，实际是让其中一端
     认不出另一端的输出。本仓库已经因为「同一标的两套代码写法」栽过一次。
@@ -93,7 +93,7 @@ def to_pt(code: str) -> str:
 
 
 def pt_to_jq(code: str) -> str:
-    """券商端 形式（`.SS`/`.SZ`）→ 聚宽形式（`.XSHG`/`.XSHE`）。
+    """券商端形式（`.SS`/`.SZ`）→ 聚宽形式（`.XSHG`/`.XSHE`）。
 
     与 `to_jq` 的区别：`to_jq` 是**从裸代码推**（靠首位字符判断交易所），
     本函数是**从已有后缀翻**（靠查表）。两条路都要有，因为两种输入都可能出现：
@@ -317,7 +317,7 @@ class PositionSnapshot:
     信号端自己记的持仓只是缓存，随时可能因为「卖了但没成交」「被人工操作过」
     而与真实情况不一致。因此对账失败时必须降级（见 gates.PositionsSyncedGate）。
 
-    ## 代码形式：内部归一到聚宽形式，对外写成 PT 形式
+    ## 代码形式：内部归一到聚宽形式，对外写成券商端形式
 
     | 位置 | 形式 |
     |---|---|
@@ -326,7 +326,7 @@ class PositionSnapshot:
 
     内部统一成聚宽形式，是因为 `Signal.code` 也是聚宽形式 —— 全仓库只留一种
     内部写法，才不会重演「同一标的两套代码格式」那个坑（`marketdata/base.py`
-    与 `strategy.py` 各记过一次）。线格式则必须是 PT 形式，因为线上就是那么写的。
+    与 `strategy.py` 各记过一次）。线格式则必须是券商端形式，因为线上就是那么写的。
     两者的转换收在 `to_dict`/`from_dict` 这一对里，别的地方不碰。
     """
 
@@ -336,7 +336,7 @@ class PositionSnapshot:
     updated_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """写成线格式。**key 转成 PT 形式**（`.SS`/`.SZ`），见类文档。"""
+        """写成线格式。**key 转成券商端形式**（`.SS`/`.SZ`），见类文档。"""
         return {
             "update_time": fmt_dt(self.updated_at or datetime.now()),
             "total_value": self.total_value,
@@ -348,11 +348,11 @@ class PositionSnapshot:
     def from_dict(cls, d: Any) -> "PositionSnapshot":
         """读线格式。**三种形态都认**，认不出就抛 `WireFormatError`。
 
-        实测（生产源码 线上实测）线上存在**三种**形态，不是两种：
+        实测线上存在**三种**形态，不是两种：
 
           A 包装 dict  `{"update_time":…, "total_value":…, "cash":…, "positions":{…}}`
           B 裸 dict    `{code: {...}}`                     ← 早期版本写的，线上有存量
-          C 旧的 list  `[{code, amount, …}, …]`            ← 券商端 老版本遗留
+          C 旧的 list  `[{code, amount, …}, …]`            ← 执行端老版本遗留
 
         形态 C 的存在本身就说明**线上确实曾经是另一种格式**，所以兼容不是
         「防御性编程」，是在处理真实的历史包袱。
