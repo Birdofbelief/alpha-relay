@@ -42,13 +42,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests pandas pytest
 
-      - name: 跑测试（238 项，全离线）
+      - name: 跑测试（242 项，全离线）
         run: python -m pytest
 
       # 脱敏扫描也进 CI：本地那个 pre-commit 钩子靠 core.hooksPath，
       # 而那是本机配置、不随 clone 带走 —— 也就是说**别人克隆下来默认是不设防的**。
       # 这里补一道服务端的。
-      # 注意：CI 里没有 .sanitize-deny.txt（它被 gitignore 挡住，刻意不入库），
-      # 所以扫描器会自行降级并明确打印「不完整」—— 这是预期行为，不是失败。
+      # ★ 注意：CI 里两份自备清单都没有（.sanitize-deny.txt 与 .sanitize-markers.txt
+      # 都被 gitignore 挡住，刻意不入库），所以扫描器会自行降级并明确打印
+      # 「⚠️ …（**不完整**）」。**这是预期行为，不是失败** —— 而且反过来成立：
+      # 这里若打出绿勾 ✅，说明有人把私有清单提交上去了，那才是问题。
+      # 真正的「完整通过」只可能在本机跑出来。
       - name: 脱敏扫描（零凭据）
         run: python tools/sanitize_check.py --all

@@ -129,7 +129,7 @@ def test_aux_gate_blocks_only_buys(buy, sell):
     「少赚一次」和「在无保护状态下满仓」代价不对称。注意这里是
     「整体拿不到」才触发；单只缺失由策略在选股阶段排除那一只，那更精确。
     """
-    dq = DataQuality(aux_data_ok=False, aux_reason="溢价率接口超时")
+    dq = DataQuality(aux_data_ok=False, aux_reason="行业分类接口超时")
     vetoes = AuxDataGate().check([buy, sell], dq)
     assert [v.signal.action for v in vetoes] == [ACTION_BUY]
 

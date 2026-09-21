@@ -27,7 +27,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -100,13 +100,110 @@ def _assigned_value(line: str) -> tuple[str, str] | None:
     return None
 
 # ------------------------------------------------------------
-# 第二类：自定义指纹 —— **清单本身不放在这里，由使用者在仓库外提供**。
-# 一条指纹规则必须写明它要抓什么，所以把规则放进公开仓库，
-# 就等于把它要保护的结构一并公开了。
-# 这里只把**内容清空**，变量名与下面那个调用点都原样留着 ——
-# 删掉调用点或换成当时还不存在的函数，会让这个历史快照直接跑不起来。
+# 第二类：自定义指纹（**规则由使用者提供，本文件里不留任何真指纹**）
+#
+# ★ 这一类刻意**不内置任何规则**。原因不是「不方便」，而是**内置规则本身就是
+#   泄漏点**：一条指纹规则必须写明它要抓什么，于是「核心公式」「多周期结构」
+#   「阈值表」「冷却期语义」这些词就跟着规则一起进了公开仓库 —— 门禁把它要
+#   保护的东西印在了自己身上。这与 `INTERNAL_DOCS` 那条「不要写平台名」是同
+#   一个道理，只是那条泄漏的是一个名字，这条泄漏的是整段结构。
+#
+# ★★ 更要紧的一点：**按关键词过滤天生不完备。** 它只认识「我提前想到的写法」，
+#   而真正会泄漏的是**结构** —— 一个字段叫什么名字、一个参数是什么形状。
+#   实测：本文件早期那套关键词规则，对「一个私有辅助数据的**键名**被写进
+#   公开 docstring」这种残留**一条都没命中**，而它就是一个确凿的私有字段名。
+#   所以第一道防线永远是「结构上就不存在」（私有策略整段重写、
+#   公开代码里不留私有字段名），这一类规则只是**兜底的绊线**，不是防线。
+#
+#   格式（每行一条，**制表符**分隔）：
+#       正则<TAB>类别标签
+#   `#` 开头是注释；`# expect: N` 声明本文件应有多少条规则（见下）。
+#   文件被 `.gitignore` 挡住 —— 一个为了保密而存在的文件，绝不能自己成为
+#   泄漏源（同第三类）。格式示例见 `.sanitize-markers.example.txt`。
+#
+# ★ 三条硬错误一律**整轮作废（退出码 2）**，绝不跳过那一行：
+#     1. 某行没有制表符
+#     2. 正则编译不过
+#     3. `# expect: N` 与实际条数对不上
+#   第 1 条不是假想：制表符被打成空格时，正则**照样编译得过**（空格在正则里
+#   只是普通字符），只是永远匹配不到任何东西 —— 一个完美的静默失效。
+#   跳过一条读不懂的规则，和「那条规则没命中」，在终端上长得一模一样。
 # ------------------------------------------------------------
-STRATEGY_MARKERS = []
+
+MARKER_FILE_ENV = "SC_MARKER_FILE"
+MARKER_FILE_DEFAULT = ".sanitize-markers.txt"
+MARKER_EXAMPLE_DEFAULT = ".sanitize-markers.example.txt"
+MARKER_SEP = "\t"
+DEFAULT_MARKER_LABEL = "自定义指纹"
+
+#: 可选的头指令，声明清单里应当解析出几条规则。
+#: 存在的理由：**指纹规则被删掉时，没有任何测试会变红** —— 而「门禁悄悄变松」
+#: 在本仓库真实发生过（黑名单规则整条瞎掉却无人察觉）。
+MARKER_EXPECT_RE = re.compile(r"^#\s*expect\s*:\s*(\d+)\s*$", re.IGNORECASE)
+
+
+class MarkerFileError(RuntimeError):
+    """指纹清单读不懂或自相矛盾 —— 必须当成失败，不能当成「没有规则」。"""
+
+
+class MarkerFile(NamedTuple):
+    """一份加载好的指纹清单。`declared` 是 `# expect:` 声明的条数（没写则 None）。"""
+
+    path: Path
+    rules: list[tuple[str, str]]
+    declared: int | None = None
+
+
+def load_markers(path: Path | None = None) -> MarkerFile:
+    """读取自定义指纹清单。文件不存在 → 空清单（不报错，但调用方要如实说不完整）。
+
+    三条硬错误见上（缺分隔符 / 正则编译不过 / expect 对不上），一律抛
+    `MarkerFileError` 让整轮结果作废。**降级成「跳过这一条」是本文件反复在防
+    的那种失效**：它表现为一次干净通过。
+    """
+    if path is None:
+        path = Path(os.environ.get(MARKER_FILE_ENV, REPO_ROOT / MARKER_FILE_DEFAULT))
+    if not path.exists():
+        return MarkerFile(path, [])
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise MarkerFileError(f"读不了指纹清单 {path}：{e}") from e
+
+    rules: list[tuple[str, str]] = []
+    declared: int | None = None
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        m = MARKER_EXPECT_RE.match(line)
+        if m:
+            declared = int(m.group(1))
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        if MARKER_SEP not in line:
+            raise MarkerFileError(
+                f"{path}:{lineno} 这一行没有制表符。格式是「正则<TAB>类别标签」。\n"
+                f"    分隔符若被打成空格，正则**照样编译得过**（空格在正则里是普通"
+                f"字符），只是永远匹配不到任何东西 —— 这种失效从输出上看不出来，"
+                f"所以这里不跳过，直接作废整轮。")
+        pattern, label = (part.strip() for part in line.split(MARKER_SEP, 1))
+        if not pattern:
+            raise MarkerFileError(f"{path}:{lineno} 正则为空（空正则会匹配每一行）")
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            raise MarkerFileError(f"{path}:{lineno} 正则编译不过：{e}") from e
+        rules.append((pattern, label or DEFAULT_MARKER_LABEL))
+
+    if declared is not None and declared != len(rules):
+        raise MarkerFileError(
+            f"{path} 声明 `# expect: {declared}`，实际解析出 {len(rules)} 条 ——"
+            f"要么有规则被删掉了，要么有一行写坏了。\n"
+            f"    规则条数变少不会让任何测试变红，所以这一条只能自己拦。")
+
+    return MarkerFile(path, rules, declared)
 
 # 内部文档 —— 整份都不该出现在公开仓库里（含实盘阈值与事故细节）。
 #
@@ -267,7 +364,14 @@ def _is_json_with_hex32(path: str) -> bool:
     return Path(path).suffix in {".lock", ".sum", ".json"} and "lock" in Path(path).name
 
 
-def scan_text(path: str, text: str) -> list[Finding]:
+def scan_text(path: str, text: str,
+              markers: Sequence[tuple[str, str]] = ()) -> list[Finding]:
+    """扫描一段文本。`markers` 是 `(正则, 类别标签)` 列表，默认为空。
+
+    ★ 默认空是**故意的**：指纹规则全部来自外部清单（见第二类），
+    所以这个函数的默认行为里没有任何指纹检查。想检查指纹就把清单传进来 ——
+    显式传参，而不是让函数偷偷去读磁盘上的某个文件。
+    """
     findings: list[Finding] = []
     lines = text.splitlines()
 
@@ -289,12 +393,27 @@ def scan_text(path: str, text: str) -> list[Finding]:
                 if not re.search(r"os\.(environ|getenv)|getenv\(|ENV\[", value):
                     findings.append(Finding(path, i, f"凭据字段被赋了非占位值: {name}"))
 
-    for rx, label in STRATEGY_MARKERS:
+    findings.extend(scan_markers(path, text, markers))
+    return findings
+
+
+def scan_markers(path: str, text: str,
+                 markers: Sequence[tuple[str, str]] = ()) -> list[Finding]:
+    """只跑**自定义指纹**那一类。
+
+    ★ 单独抽出来是为了自身豁免（见 `scan_paths`）：扫描器自己的源码必须跳过
+    凭据类规则（它按定义就得写出 `ghp_` 这类词样），**但指纹类不能跳过** ——
+    本文件是公开的，所以一条指纹若命中它自己的注释，那不是误报，是真命中。
+    实战验证过一次：本节初版把 `scan_text` 整个用在自身豁免上，其中一条
+    `SECRETISH_NAMES = re.compile(...)` 当场被凭据规则报了出来。两个方向都得试。
+    """
+    out: list[Finding] = []
+    lines = text.splitlines()
+    for rx, label in markers:
         for i, line in enumerate(lines, start=1):
             if re.search(rx, line, re.IGNORECASE):
-                findings.append(Finding(path, i, f"私有策略指纹: {label}"))
-
-    return findings
+                out.append(Finding(path, i, f"自定义指纹: {label}"))
+    return out
 
 
 def resolve(path: str) -> Path:
@@ -309,28 +428,36 @@ def resolve(path: str) -> Path:
     return p if p.is_absolute() else REPO_ROOT / p
 
 
-def scan_paths(paths: list[str], denylist: list[str] | None = None) -> list[Finding]:
+def scan_paths(paths: list[str], denylist: list[str] | None = None,
+               markers: Sequence[tuple[str, str]] | None = None) -> list[Finding]:
     """扫描一组路径。`paths` 可以是仓库相对路径，也可以是绝对路径。
 
-    ★ **黑名单文件自身必须被跳过。** 它按定义装满了不该出现的东西，
-    扫它必然满屏命中。`--all` 会走到它，所以这条跳过是必需的，不是优化。
+    ★ **作者自备的两个清单文件自身必须被跳过。** 它们按定义装满了不该出现的
+    东西（黑名单是字面量，指纹清单是「正则 + 它要抓什么」的说明），扫它们必然
+    满屏命中。`--all` 会走到它们，所以这条跳过是必需的，不是优化。
     """
     findings: list[Finding] = []
-    deny_names = {DENY_FILE_DEFAULT, Path(DENY_FILE_DEFAULT).name}
+    private_names = {Path(n).name for n in (DENY_FILE_DEFAULT, MARKER_FILE_DEFAULT)}
+    markers = markers or []
 
     for rel in paths:
         norm = rel.replace(os.sep, "/")
         if norm in SELF_EXEMPT:
             # 扫描器要写规则，规则里必然出现 `ghp_` 这类词样，扫它自己会满屏误报
-            # —— 所以豁免。但**豁免范围必须只覆盖那三类规则，不能连黑名单一起豁免**：
+            # —— 所以豁免。但**豁免范围必须只覆盖那三类规则，不能连自备清单一起豁免**：
             # 本文件初版是整体 `continue`，结果它自己注释里举的示例代码恰好是个真标的池
             # 成员，而唯一该发现它的检查正好瞎了。豁免给宽一点，就是静默漏检。
+            #
+            # 指纹清单也照跑，理由是**本文件是公开的**：所以一条指纹若命中了它自己的
+            # 注释，那不是误报，是真命中 —— 那段注释就是泄漏。正解是改写注释，
+            # 不是给它加豁免。
             self_path = REPO_ROOT / norm
             if self_path.is_file():
-                findings.extend(scan_denylist(
-                    norm, self_path.read_text(encoding="utf-8"), denylist or []))
+                own_text = self_path.read_text(encoding="utf-8")
+                findings.extend(scan_denylist(norm, own_text, denylist or []))
+                findings.extend(scan_markers(norm, own_text, markers))
             continue
-        if Path(norm).name in deny_names:
+        if Path(norm).name in private_names:
             continue
         if Path(norm).suffix.lower() in BINARY_EXT:
             continue
@@ -350,7 +477,7 @@ def scan_paths(paths: list[str], denylist: list[str] | None = None) -> list[Find
             text = full.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        findings.extend(scan_text(norm, text))
+        findings.extend(scan_text(norm, text, markers))
         findings.extend(scan_denylist(norm, text, denylist or []))
 
     return findings
@@ -373,6 +500,24 @@ def main() -> int:
         print(f"ℹ️ 未发现自备黑名单（{DENY_FILE_DEFAULT}）——"
               f"「我的标的池代码有没有泄漏」这类检查**不会被执行**。")
         print(f"   建议在仓库根建一个（每行一条字面量），该文件已被 .gitignore 挡住。")
+
+    # ★ 清单读不懂 → **本次结果无效**，不是「那就少查几类」。
+    #   这是本文件的核心立场：一条读不懂的规则若被静默跳过，它的输出与
+    #   「那条规则没命中」逐字相同，而后者看起来就是一次干净通过。
+    try:
+        markers = load_markers()
+    except MarkerFileError as e:
+        print("💥 自定义指纹清单读不懂 —— **本次结果无效，不得视为通过**。",
+              file=sys.stderr)
+        print(f"   {e}", file=sys.stderr)
+        return 2
+    if markers.rules:
+        print(f"ℹ️ 已加载自定义指纹 {len(markers.rules)} 条（{MARKER_FILE_ENV} / "
+              f"{markers.path.name}）")
+    else:
+        print(f"ℹ️ 未发现自定义指纹清单（{MARKER_FILE_DEFAULT}）——"
+              f"「这类私有特征有没有被搬进来」的检查**不会被执行**。")
+        print(f"   格式见 {MARKER_EXAMPLE_DEFAULT}（每行：正则 + 制表符 + 类别标签）。")
 
     if args.path:
         targets, label = args.path, "指定文件"
@@ -411,21 +556,31 @@ def main() -> int:
                   file=sys.stderr)
             return 2
 
-    findings = scan_paths(targets, denylist=denylist)
+    findings = scan_paths(targets, denylist=denylist, markers=markers.rules)
 
     if not findings:
         # ★ 通过时必须说清「这次到底检查了什么」。
-        # 少了黑名单的「✅ 通过」是一句会骗人的话：它看起来和完整通过一样，
+        # 少一份清单的「✅ 通过」是一句会骗人的话：它看起来和完整通过一样，
         # 而恰恰是「标的池代码有没有泄漏」这件对本仓库最要紧的事没跑。
         # 最后一行是唯一会被记住的那行，所以差别必须写在最后一行上。
-        if denylist:
-            print(f"✅ 脱敏扫描通过：{label}共 {len(targets)} 个，"
-                  f"零命中（含自备黑名单 {len(denylist)} 条）。")
+        missing = []
+        if not denylist:
+            missing.append(DENY_FILE_DEFAULT)
+        if not markers.rules:
+            missing.append(MARKER_FILE_DEFAULT)
+
+        if not missing:
+            print(f"✅ 脱敏扫描通过：{label}共 {len(targets)} 个，零命中"
+                  f"（含自备黑名单 {len(denylist)} 条、自定义指纹 {len(markers.rules)} 条）。")
         else:
             print(f"⚠️ 脱敏扫描通过（**不完整**）：{label}共 {len(targets)} 个，零命中，"
-                  f"但未加载自备黑名单。")
-            print("   「标的池代码有没有泄漏」这类检查**没有执行**。"
-                  "要算完整通过，请在仓库根建 .sanitize-deny.txt（已被 .gitignore 挡住）。")
+                  f"但 {' 与 '.join(missing)} 未加载。")
+            print("   未加载的那一类检查**没有执行** —— 要算完整通过，"
+                  "请在仓库根把这两份清单都建起来（都已被 .gitignore 挡住）：")
+            print(f"     {DENY_FILE_DEFAULT}                    每行一条**字面量**"
+                  f"（标的池代码、账户名之类的确定字符串）")
+            print(f"     {MARKER_FILE_DEFAULT}  每行「正则 + 制表符 + 类别标签」，"
+                  f"格式见 {MARKER_EXAMPLE_DEFAULT}")
         return 0
 
     print(f"❌ 脱敏扫描发现 {len(findings)} 处命中（{label}）：\n")

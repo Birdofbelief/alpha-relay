@@ -161,7 +161,7 @@ Gist 的更新是 read-modify-write、**非原子**，两边都会以为自己�
 
 ## 五、第四步：辅助数据（如果有）
 
-配额外的数据（溢价、行业分类、外部信号……）用 `AuxSource` 接：
+配额外的数据（行业分类、外部信号、财报……）用 `AuxSource` 接：
 
 ```python
 class MyAux(AuxSource):

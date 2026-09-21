@@ -242,7 +242,7 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
                      positions_sync_reason="读不到执行端持仓")),
         ("辅助数据整体缺失",
          DataQuality(positions_synced=True,
-                     aux_data_ok=False, aux_reason="溢价率接口超时")),
+                     aux_data_ok=False, aux_reason="行业分类接口超时")),
     ]
     for label, dq in cases:
         allowed, vetoes = chain.runner.gates.apply([buy, sell], dq)

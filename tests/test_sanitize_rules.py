@@ -33,6 +33,11 @@
 所以所有诱饵都由 `_bait()` 在**运行期**拼出来，源码里没有任何一个完整形态。
 这不是取巧：它顺带证明了「扫描器扫的是文本，不是意图」——
 它不会因为一句话出现在测试里就网开一面。
+
+★ 本文件曾经还有一组「私有策略指纹」诱饵，那组已经**整体搬出这个仓库**了 ——
+连同它们在扫描器里的规则一起。原因见 `docs/SANITIZATION.md` 第四节：
+一份必须写明「我要抓什么」的规则清单，本身就是它要保护的那件事的一份说明书。
+现在这组诱饵只服务于**凭据形状**（那一类规则是公开的、通用的，不涉及私货）。
 """
 from __future__ import annotations
 
@@ -220,11 +225,154 @@ def test_assigned_value_parser_handles_the_two_colon_cases():
 
 
 # ============================================================
-# 规则三：自定义指纹（**清单由使用者提供，仓库里不留真指纹**）
+# 规则三：自定义指纹（规则由使用者提供，扫描器里不留真指纹）
 # ============================================================
-# 这一段原来钉的是「内置指纹表抓不抓得到」，而那张表本身就不该在公开
-# 仓库里 —— 规则要写明它抓什么，写明了就等于公布它保护的结构。
-# 因此诱饵数据与依赖它的那几条测试一并移除，本仓库只留机制层的测试。
+# ★ 这一节测的是**机制**，不是某几条规则 —— 因为规则清单本身不在这个仓库里。
+#
+#   为什么规则不能内置？因为**一条指纹规则必须写明它要抓什么**，那份清单
+#   进了公开仓库就等于把要保护的结构印在门禁自己身上。
+#   更根本的是：按关键词过滤天生不完备，它只认识「提前想到的写法」。
+#   实测过一次：一个私有辅助数据的**键名**被留在公开 docstring 里，
+#   早期那套内置规则**一条都没命中**。
+#
+#   所以下面验的是四件事：
+#     1. 清单加载了，规则就真的会被报出来（**命中方向**）
+#     2. 清单缺席 → 结论是「不完整」，不是绿勾
+#     3. 清单**读不懂** → 整轮作废，绝不静默跳过那一条
+#     4. 规则被删掉 → 由清单自己的 `# expect: N` 拦住
+#   第 3、4 条是重点：这三种失效的终端输出与「通过」逐字相同。
+_MARKER_BAIT_RX = _bait("bai", "t_", "pattern")
+_MARKER_BAIT_HIT = _bait("bai", "t_", "pattern", "_42")
+
+
+def test_marker_rules_are_actually_reported():
+    """★ 命中方向必须真的通 —— 与黑名单那条同一个理由。
+
+    「干净输入不报」既可能是「真的干净」也可能是「整条规则瞎了」，
+    两者输出一样。所以必须喂一个**会命中**的输入。
+    """
+    findings = san.scan_text("f.py", f"x = {_MARKER_BAIT_HIT}\n",
+                             [(_MARKER_BAIT_RX, "某类私有特征")])
+    assert len(findings) == 1
+    assert findings[0].lineno == 1
+    assert "某类私有特征" in findings[0].category
+    assert findings[0].snippet == "", "命中值一律不进报告"
+
+
+def test_marker_label_defaults_when_the_line_ends_with_a_tab():
+    """标签给空时有个兜底名 —— 报告里必须始终有「类别」可指。"""
+    assert san.scan_text("f.py", f"{_MARKER_BAIT_HIT}\n",
+                         [(_MARKER_BAIT_RX, san.DEFAULT_MARKER_LABEL)])
+
+
+def test_load_markers_reads_the_documented_format(tmp_path):
+    """格式：`正则 + 制表符 + 类别标签`；`#` 注释与空行跳过。"""
+    f = tmp_path / "m.txt"
+    f.write_text("# 注释\n\n" + f"{_MARKER_BAIT_RX}\t某类特征\n", encoding="utf-8")
+    loaded = san.load_markers(f)
+    assert loaded.rules == [(_MARKER_BAIT_RX, "某类特征")]
+    assert loaded.declared is None
+    # 文件不存在 → 空清单，不抛错（「不完整」由 main 负责说出来）
+    assert san.load_markers(tmp_path / "不存在.txt").rules == []
+
+
+@pytest.mark.parametrize("body,why", [
+    ("# expect: 2\n" + _MARKER_BAIT_RX + "\t甲\n", "声明 2 条、实际 1 条"),
+    ("# expect: 1\n" + _MARKER_BAIT_RX + "\t甲\n" + _MARKER_BAIT_RX + "\t乙\n",
+     "声明 1 条、实际 2 条"),
+])
+def test_marker_expect_count_mismatch_raises(tmp_path, body, why):
+    """★ 规则被删掉时，**没有任何测试会变红** —— 所以清单得自己说「我该有几条」。
+
+    这是替代品：原来这条约束写在测试里的 `assert len(...) == 9`，
+    而那个数（以及它旁边那份清单）本身就不该出现在公开仓库。
+    现在约束跟着清单走，清单在哪，守卫就在哪。
+    """
+    f = tmp_path / "m.txt"
+    f.write_text(body, encoding="utf-8")
+    with pytest.raises(san.MarkerFileError):
+        san.load_markers(f)
+
+
+def test_marker_line_without_a_tab_raises_instead_of_silently_skipping(tmp_path):
+    """★★ **分隔符被打坏时必须整体作废，不能跳过那一行。**
+
+    这是本文件里最值得单独测的一条失效：制表符若被打成空格，那条正则
+    **照样编译得过**（空格在正则里只是普通字符），于是它变成一条永远匹配不到
+    任何东西的规则 —— 一个从输出上完全看不出来的漏洞。
+    这正是 `_bait()` 的文档里那条「静默失配」的同一个形状。
+
+    断言两个方向：坏文件必须抛错；**好文件不许抛错**（否则「恒抛错」也能骗过上面那条）。
+    """
+    bad = tmp_path / "bad.txt"
+    bad.write_text(_MARKER_BAIT_RX + " 某类特征\n", encoding="utf-8")   # 空格，不是制表符
+    with pytest.raises(san.MarkerFileError):
+        san.load_markers(bad)
+
+    good = tmp_path / "good.txt"
+    good.write_text(_MARKER_BAIT_RX + "\t某类特征\n", encoding="utf-8")
+    assert san.load_markers(good).rules, "正常格式的行必须能加载"
+
+
+@pytest.mark.parametrize("pattern", ["(", "a{2,1}", "[未闭合"])
+def test_marker_regex_that_does_not_compile_raises(tmp_path, pattern):
+    """正则编译不过 → 作废。**跳过它**等于把这一条规则静默删掉。"""
+    f = tmp_path / "m.txt"
+    f.write_text(f"{pattern}\t甲\n", encoding="utf-8")
+    with pytest.raises(san.MarkerFileError):
+        san.load_markers(f)
+
+
+def test_marker_file_with_empty_regex_raises(tmp_path):
+    """空正则会匹配**每一行** —— 那不是漏检，是把报告淹掉。同样作废。"""
+    f = tmp_path / "m.txt"
+    f.write_text("\t甲\n", encoding="utf-8")
+    with pytest.raises(san.MarkerFileError):
+        san.load_markers(f)
+
+
+def test_marker_file_itself_is_skipped():
+    """★ 指纹清单自己也必须被跳过 —— 它的每一行都是「正则 + 它要抓什么」。
+
+    与黑名单那条同理，`--all` 会遍历到它。
+    """
+    assert san.scan_paths([san.MARKER_FILE_DEFAULT],
+                          markers=[(_MARKER_BAIT_RX, "甲")]) == []
+    assert san.scan_paths([san.MARKER_EXAMPLE_DEFAULT],
+                          markers=[(_MARKER_BAIT_RX, "甲")]) == []
+
+
+# ---- 下面两条只在**作者本机**（清单文件存在时）才真的跑 ----
+_AUTHOR_MARKERS = REPO_ROOT / san.MARKER_FILE_DEFAULT
+
+
+@pytest.mark.skipif(not _AUTHOR_MARKERS.exists(),
+                    reason="本机没有自备指纹清单（公开克隆里本来就没有），跳过")
+def test_author_marker_file_is_self_consistent():
+    """作者那份清单自己得是对的：声明条数对得上、标签不重名。
+
+    ★ 公开仓库里跑不到这条（清单不入库）—— 这是**如实**的跳过，不是把断言放宽：
+    在作者本机上它照跑，而它保护的正是作者本人的那份清单。
+    """
+    loaded = san.load_markers(_AUTHOR_MARKERS)
+    assert loaded.rules, "清单存在却解析出 0 条 —— 格式多半坏了"
+    assert loaded.declared is not None, "建议写上 `# expect: N`（删规则时唯一的绊线）"
+    labels = [label for _, label in loaded.rules]
+    assert len(set(labels)) == len(labels), f"标签重名，命中报告无法定位：{labels}"
+
+
+@pytest.mark.skipif(not _AUTHOR_MARKERS.exists(),
+                    reason="本机没有自备指纹清单（公开克隆里本来就没有），跳过")
+def test_demo_strategy_does_not_trip_the_author_markers():
+    """★ 演示策略必须过作者那份清单 —— 它是**范例**，范例会被整段复制走。
+
+    它的存在意义是「证明框架与策略无关」，所以它不能沾真策略的任何结构性特征。
+    （这条原来打的是内置规则；规则搬出仓库后，它跟着清单走。）
+    """
+    markers = san.load_markers(_AUTHOR_MARKERS).rules
+    demo = (REPO_ROOT / "strategies" / "demo_rotation.py").read_text(encoding="utf-8")
+    assert san.scan_text("strategies/demo_rotation.py", demo, markers) == []
+
 
 # ============================================================
 # 规则四：内部文档（按文件名拦）
@@ -289,21 +437,78 @@ def test_load_denylist_handles_comments_and_missing_file(tmp_path):
     assert san.load_denylist(tmp_path / "不存在.txt") == []
 
 
-def _run_main(monkeypatch, capsys, argv, no_denylist=True):
+def _run_main(monkeypatch, capsys, argv, no_denylist=True, no_markers=True):
     """跑一遍 `main()`，拿到 `(退出码, stdout, stderr)`。
 
-    黑名单走 `SC_DENY_FILE` 指向一个不存在的路径 —— 这是**唯一**能可靠地
-    「让黑名单为空」的办法：默认值会去仓库根找真文件，而本机那份是有的。
+    两份自备清单都走环境变量指向**不存在的路径** —— 这是唯一能可靠地
+    「让它们为空」的办法：默认值会去仓库根找真文件，而本机那两份是有的
+    （`.sanitize-deny.txt` 与 `.sanitize-markers.txt` 都被 gitignore 挡住但真实存在）。
+    ★ 不做这层隔离，测试就会**读本机那份** —— 结果是「在作者机器上跑一套、
+    在别人机器上跑另一套」，而两台机器上的输出看起来一模一样。
 
     ★ stderr 也要收：本文件里好几条断言的对象**只在 stderr 上**（失败原因、
     「这不是通过」这类话）。只看 stdout 的话，那些措辞退化了也测不出来。
     """
     if no_denylist:
         monkeypatch.setenv(san.DENY_FILE_ENV, str(REPO_ROOT / "不存在的黑名单.txt"))
+    if no_markers:
+        monkeypatch.setenv(san.MARKER_FILE_ENV, str(REPO_ROOT / "不存在的指纹清单.txt"))
     monkeypatch.setattr(san.sys, "argv", ["sanitize_check.py", *argv])
     rc = san.main()
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
+
+
+@pytest.fixture
+def author_files(monkeypatch, tmp_path):
+    """造两份**非空**的自备清单（内容是编的），用于「完整通过」那一侧。"""
+    deny = tmp_path / "deny.txt"
+    deny.write_text("某某标的\n某某账户\n", encoding="utf-8")
+    markers = tmp_path / "markers.txt"
+    markers.write_text(f"# expect: 1\n{_MARKER_BAIT_RX}\t某类私有特征\n",
+                       encoding="utf-8")
+    monkeypatch.setenv(san.DENY_FILE_ENV, str(deny))
+    monkeypatch.setenv(san.MARKER_FILE_ENV, str(markers))
+    return deny, markers
+
+
+def test_missing_marker_file_alone_is_also_incomplete(monkeypatch, capsys, tmp_path):
+    """★ 只缺指纹清单也要报「不完整」—— 且必须**点名是哪一份**缺了。
+
+    这一条是新加的，因为「不完整」的种类从一种变成了两种：
+    只说「不完整」而不说缺哪一份，人会去补上他已经有的那份。
+    """
+    deny = tmp_path / "deny.txt"
+    deny.write_text("某某标的\n", encoding="utf-8")
+    clean = tmp_path / "clean.py"
+    clean.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setenv(san.DENY_FILE_ENV, str(deny))
+
+    rc, out, _ = _run_main(monkeypatch, capsys, ["--path", str(clean)])
+    assert rc == 0, f"缺清单不是失败，只是不完整，实际退出码 {rc}：\n{out}"
+    assert "不完整" in out, f"缺指纹清单时必须明说不完整：\n{out}"
+    assert san.MARKER_FILE_DEFAULT in out, f"必须点名缺的是哪一份：\n{out}"
+    assert "✅" not in out, f"不能打绿勾 —— 那是「完整通过」才配用的符号：\n{out}"
+
+
+def test_broken_marker_file_makes_the_whole_run_invalid(monkeypatch, capsys, tmp_path):
+    """★★ 清单读不懂 → 退出码 2（**本次结果无效**），不是 0、也不是 1。
+
+    2 与 1 的区别是刻意的：`1` 是「查到了东西」，`2` 是「这次不算数」。
+    把 2 退化成 0，等于把「有一类检查根本没跑」报告成一次干净通过 ——
+    而它看起来和真通过逐字相同。
+    """
+    bad = tmp_path / "bad.txt"
+    bad.write_text(_MARKER_BAIT_RX + " 某类特征\n", encoding="utf-8")   # 缺制表符
+    clean = tmp_path / "clean.py"
+    clean.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setenv(san.MARKER_FILE_ENV, str(bad))
+
+    rc, out, err = _run_main(monkeypatch, capsys, ["--path", str(clean)],
+                             no_markers=False)
+    assert rc == 2, f"清单读不懂必须作废整轮，实际退出码 {rc}：\n{out}\n{err}"
+    assert "这不是通过" in err or "不得视为通过" in err, f"必须说清结果无效：\n{err}"
+    assert "✅" not in out, f"清单都读不懂了，绝不能打绿勾：\n{out}"
 
 
 def test_missing_denylist_is_reported_as_incomplete_not_as_pass(monkeypatch, capsys, tmp_path):
@@ -325,13 +530,21 @@ def test_missing_denylist_is_reported_as_incomplete_not_as_pass(monkeypatch, cap
     assert "不完整" in out, f"缺黑名单时必须明说不完整，实际输出：\n{out}"
     assert "✅" not in out, f"不能打绿勾 —— 那是「完整通过」才配用的符号：\n{out}"
 
-    # 反向：有黑名单时同一个文件必须报「完整」通过
+    # 反向：两份清单都在时，同一个文件必须报「完整」通过。
+    # ★ 反向必须**两份都给齐**：「有黑名单」不再等于完整通过 —— 缺指纹清单
+    #   同样是「有一类检查没跑」。少了这一半，反向断言会变成在奖励一个
+    #   把「不完整」悄悄吞掉的实现。
     deny = tmp_path / "deny.txt"
     deny.write_text("绝不出现的词\n", encoding="utf-8")
+    markers = tmp_path / "markers.txt"
+    markers.write_text("# expect: 1\n" + _MARKER_BAIT_RX + "\t某类私有特征\n",
+                       encoding="utf-8")
     monkeypatch.setenv(san.DENY_FILE_ENV, str(deny))
-    rc, out, _ = _run_main(monkeypatch, capsys, ["--path", str(clean)], no_denylist=False)
+    monkeypatch.setenv(san.MARKER_FILE_ENV, str(markers))
+    rc, out, _ = _run_main(monkeypatch, capsys, ["--path", str(clean)],
+                           no_denylist=False, no_markers=False)
     assert rc == 0, out
-    assert "✅" in out and "不完整" not in out, f"有黑名单时应当报完整通过：\n{out}"
+    assert "✅" in out and "不完整" not in out, f"两份清单齐了应当报完整通过：\n{out}"
 
 
 def test_zero_targets_is_a_failure_not_a_pass(monkeypatch, capsys):
@@ -569,7 +782,11 @@ def test_whole_repo_passes_the_scanner():
     """
     paths = san._all_files()
     assert len(paths) > 20, f"文件数太少（{len(paths)}），扫描可能没生效"
-    findings = san.scan_paths(paths, san.load_denylist())
+    # ★ 两份自备清单都喂进去（在本机它们真实存在）。在公开克隆里这两份是空的，
+    #   于是这一条退化成「只跑内置规则」—— 退化是**如实**的：那个环境里确实
+    #   没有需要查的私有内容，而不是「查了但放宽了断言」。
+    findings = san.scan_paths(paths, san.load_denylist(),
+                              san.load_markers().rules)
     assert findings == [], (
         "工作区里有命中：\n" +
         "\n".join(f"  {f.path}:{f.lineno} {f.category}" for f in findings))
