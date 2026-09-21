@@ -12,7 +12,8 @@
 
     Strategy     ← 你的 alpha。只实现 decide(ctx)，不碰任何 I/O
     MarketData   ← 行情。可换成假数据、加缓存、加重试
-    Transport    ← 投递。可换成 文件 / Gist / 空实现，或你自己实现的后端
+    Transport    ← 投递。内置 文件 / Gist / 空实现；你自己的后端放仓库外，
+                   让 SC_TRANSPORT 指过去（或 build_chain(transport=...)）即可
     Executor     ← 执行端。把信号变成委托 —— 本仓库只带一个纸面占位
     Gate         ← 风控。fail-closed，且与策略无关
     Runner       ← 调度。时间预算、失败上限、心跳

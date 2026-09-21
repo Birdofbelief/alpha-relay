@@ -10,6 +10,7 @@
 | **L0 叶子**（零包内依赖） | `models` `config` `calendar` `notify` `executor` `marketdata/base` `transport/base` | —— |
 | **L1 零件** | `gates` `store` | `models`（+ `transport/base`） |
 | **L1 后端实现** | `marketdata/{cache,online,fake}` `transport/{file,gist,null}` | `base` 家族 |
+| **L1 后端加载** | `transport/__init__`（`load_transport`） | `base` 家族 + `config` |
 | **L2 角色** | `strategy` `paper` | `calendar` / `gates` / `marketdata/base` / `models` / `store` |
 | **L3 调度** | `runner` | `strategy` `store` `gates` `notify` `transport` |
 | **L4 装配** | `chain` | **全部** |
@@ -42,6 +43,7 @@ signalchain/
 │   └── fake.py      FakeMarketData（演示与全部测试用，零网络）
 │
 ├── transport/
+│   ├── __init__.py  ★ load_transport —— 按配置装配后端（内置名 / 仓库外 .py 路径）
 │   ├── base.py      ★ Transport 协议 + CHANNEL_OWNERS + SingleWriterGuard
 │   ├── file.py      FileTransport（本地/共享盘，演示与测试默认）
 │   ├── gist.py      GistTransport（对齐现网行为）
@@ -172,7 +174,7 @@ Gist —— 换存储不影响上面这张图，也不影响 channel 的所有�
 | 你想要 | 动哪 | 不用碰 |
 |---|---|---|
 | 换策略 | 写一个 `Strategy` 子类，或从仓库外路径加载 | 其余全部 |
-| 换投递方式 | 实现 `Transport` 的三个方法 | 策略、闸门、调度 |
+| 换投递方式 | 写一个 `Transport` 子类放进**仓库外**的 `.py` 文件，再让配置指过去 | 策略、闸门、调度、这个包里的任何文件 |
 | 换行情源 | 实现 `MarketData` | 策略、传输 |
 | 加一层行情缓存 | 写装饰器包住现有 `MarketData` | 见 `marketdata/cache.py` |
 | 加一道风控 | 写一个 `Gate` 加进 `GateChain` | 策略 |
@@ -182,6 +184,50 @@ Gist —— 换存储不影响上面这张图，也不影响 channel 的所有�
 **「不用碰」那一列才是这张表的意义。** 每一行它都能被单独验证 ——
 `tests/test_transport_contract.py` 就是「换后端不碰其余」的可执行证据：
 同一套用例跑遍所有后端。
+
+### 换投递方式，具体怎么做
+
+写一个 `Transport` 子类，**放在仓库外的任意一个 `.py` 文件里**，然后二选一：
+
+```python
+# ① 配置文件里给一条路径（不写代码的那条路）
+#    .env:  SC_TRANSPORT=../my_objectstore.py
+chain = build_chain(Config.from_env(), strategy="./my_private_strategy.py")
+
+# ② 装配时直接把对象传进去（显式传入优先于配置，与 strategy= / market= 同一条优先级）
+chain = build_chain(config, transport=MyObjectStorage(endpoint, key))
+```
+
+那个文件长这样 —— 三个方法，其余什么都不用写：
+
+```python
+from signalchain.transport import Transport
+
+
+class MyObjectStorage(Transport):
+    def read(self, channel):        # -> 文档对象，没有则 None
+        ...
+    def write(self, channel, doc):  # 整份替换（不是追加）；成功返回 True
+        ...
+    def describe(self):             # 一句话自报身份（**不得含凭据**），会进日志与心跳
+        return "objectstore(我的桶)"
+```
+
+三条必须知道的：
+
+- **文件里只有一个 `Transport` 子类时自动选它**；有多个（辅助类很常见）就加一行
+  `TRANSPORT = 你要用的那个类`。构造需要参数的后端，就写
+  `TRANSPORT = MyObjectStorage.from_env`（一个零参工厂，先例是内置的
+  `GistTransport.from_env()`）。规则与策略那边**完全一致**，包括「不替你猜」。
+- **取值写错会报错，不会悄悄退回 `file`。** 这是刻意的：静默退化的后果不是
+  「少个功能」，是两端写到了**两处不同的存储**，而两边日志都显示成功。
+  唯一的例外是 gist 缺凭据 —— 那一条仍然降级（成因是「凭据没配好」，不是「名字写错了」）。
+- **所有权约束跟着你走，不用你实现。** `SingleWriterGuard` 由 Runner / Executor
+  自己套在你的后端外面，你只管存字节。
+
+`tests/test_transport_plugin.py` 就是这条路的可执行证据：它在临时目录（= 仓库外）
+写一个真实的后端文件，经 `SC_TRANSPORT=<路径>` 装进链、跑完一轮，再检查那个后端
+**真的收到了字节**。
 
 ---
 
@@ -202,4 +248,6 @@ Gist —— 换存储不影响上面这张图，也不影响 channel 的所有�
    **一个不能用的类不是扩展点，是噪音**；真正说明「可拔插」的是
    `tests/test_transport_contract.py` 拿同一套用例跑遍**三个真实后端**。
    再写一个 HTTP 投递后端这件事被否决过一次（理由见 `DESIGN_NOTES.md` 第六节），
-   要加也不是不行：实现 `read` / `write` / `describe` 三个方法即可，其余代码一行不动。
+   要加也不是不行：写一个 `Transport` 子类放进**仓库外**的 `.py` 文件，让
+   `SC_TRANSPORT` 指过去（或 `build_chain(transport=...)`）——
+   这个包里的任何文件一行都不用动，怎么装见第六节「换投递方式，具体怎么做」。

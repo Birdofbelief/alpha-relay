@@ -12,7 +12,8 @@
 只需要实现一个 `decide(ctx)`；数据质量校验、风控闸门、投递、重试、回执、
 持仓对账、调度、心跳、告警，全部由链路负责。
 
-**投递通道可拔插**（本地文件 / Gist / 空实现 / 你自己实现的任意存储），
+**投递通道可拔插**（本地文件 / Gist / 空实现，或**你自己写的任意存储** ——
+把后端类放进仓库外一个 `.py` 文件，配置里指个路径就完事，框架一行不用改），
 **执行端也可拔插** —— 接你自己的券商终端（ptrade / miniQMT 这类客户端，或你自己写的适配层）。
 策略从**仓库外路径**加载：**你的 alpha 不进这个仓库，也不进券商平台。**
 
@@ -25,8 +26,10 @@
 > one pure function, `decide(ctx)`; the framework owns data-quality gates, risk gates,
 > delivery, retries, execution receipts, position reconciliation, scheduling, heartbeats
 > and alerting.
-> **Both ends are pluggable**: the delivery channel (local file / GitHub Gist / null /
-> any store you implement) and the executor (wire up your own broker terminal — ptrade,
+> **Both ends are pluggable**: the delivery channel (local file / GitHub Gist / null, or
+> any store you implement — drop the backend class in a `.py` file outside this repo and
+> point `SC_TRANSPORT` at it; no file in this package changes) and the executor (wire up
+> your own broker terminal — ptrade,
 > miniQMT and the like, or an adapter layer you write yourself). Strategies are loaded
 > from paths outside this repository, so
 > **your alpha never enters this repo, and never enters the broker's platform either.**
@@ -404,7 +407,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 | 场景 | 用什么 |
 |---|---|
 | **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零外部服务（只需 `requests` + `pandas` 两个包）—— `py -m signalchain.demo` 走的就是这条 |
-| **跨机器，你已有对象存储** | 自己写一个 `Transport`：三个方法，几十行。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
+| **跨机器，你已有对象存储** | 自己写一个 `Transport` 子类（三个方法，几十行）放进**仓库外**的 `.py` 文件，然后 `SC_TRANSPORT=../my_objectstore.py` 指过去 —— 框架一行不用改，写法见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第六节。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
 | **跨机器，想先用现成的** | 内置的 `GistTransport` 是一个**参考实现**：它演示了「怎么把一个只会整份读写的 HTTP 服务包成 `Transport`」。能用，但它不是唯一的、也不是默认推荐的那个 |
 
 > ★ **有一条不随存储改变：一个 channel 只能有一个写者。**
@@ -418,7 +421,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 ## 跑测试
 
 ```bash
-py -m pytest              # 272 项，全部离线，不需要任何凭据
+py -m pytest              # 289 项，全部离线，不需要任何凭据
 ```
 
 同一套测试也跑在 CI 上（Ubuntu + Windows × Python 3.10 / 3.12 / 3.13，
@@ -429,10 +432,10 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 而那是**本机配置、不随 clone 带走** —— 也就是说别人克隆下来默认是不设防的，
 所以服务端补一道。
 
-> 上面那个 **272** 是手工写的，会随代码变化。**以实测为准**：
+> 上面那个 **289** 是手工写的，会随代码变化。**以实测为准**：
 > `py -m pytest` 看退出码（0 = 全过）。
 >
-> ⚠️ **公开克隆里是 `270 passed, 2 skipped`** —— 有两条测试带 `skipif`，
+> ⚠️ **公开克隆里是 `287 passed, 2 skipped`** —— 有两条测试带 `skipif`，
 > 条件正是「作者本机那份私有指纹清单在不在」，在公开克隆里**必然跳过**。
 > 它们**只对本机有意义**（验的是那份清单自洽、且本仓库不踩它），
 > 所以这是设计，不是测试被削弱 —— 但**别把 `2 skipped` 读成「全跑过了」**。
@@ -442,6 +445,7 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 | 文件 | 在守什么 |
 |---|---|
 | `test_transport_contract.py` | 同一套用例跑遍所有后端 —— 这是「可拔插」的**证据**，不是口号 |
+| `test_transport_plugin.py` | 在**仓库外**写一个真实的 `.py` 后端，经 `SC_TRANSPORT=<路径>` 装进链、跑完一轮，检查它真的收到了字节；「取值写错必须报错、不许悄悄退回 `file`」也钉在这里 |
 | `test_wire_contract.py` | **线格式冻结**：字段名、后缀、时间格式与既有执行端逐字节兼容 |
 | `test_strategy_contract.py` | 策略纯度绊线（碰 I/O 即红）+ 从仓库外加载策略 |
 | `test_end_to_end.py` | 接缝：读磁盘上的**真实字节**，不复用解析器 |
@@ -512,9 +516,9 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 |---|---|
 | **设计来源** | 这套分层、闸门方向、单一写入者约定，来自一个**真实在跑的实盘系统**（单文件形态，产生端与执行端分离）。文档里那些「为什么」不是推演出来的。 |
 | **本仓库的状态** | ⚠️ **它是从上面那套系统里独立提取出来的，尚未替换线上。** 也就是说：**设计经过实战，这份提取产物本身还没有在生产上跑过。** 请按「可用的框架 + 未经实战的组装」看待它。 |
-| **测试证明了什么** | 272 项全离线（公开克隆 270 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权、两端可拔插、输出不崩）。它**不验证任何策略的收益**。 |
+| **测试证明了什么** | 289 项全离线（公开克隆 287 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权、两端可拔插、输出不崩）。它**不验证任何策略的收益**。 |
 | **没有的东西** | 没有券商客户端 —— 仓库里只有 `PaperExecutor` 这个**无券商占位**，真执行端你自己接（[怎么接](#换成你自己的执行端)）；没有 Web UI、没有数据库。 |
-| **投递后端** | 内置 `file` / `gist` / `null` 三个**示例**：同机用 `file` 就够；跨机器该选哪一种，见上面[跨机器那一节](#跨机器信号怎么从产生端走到执行端)。**换成别的存储（对象存储、自建 HTTP、网络盘）得由你自己实现**：每家券商终端能读到的存储不一样，这里替不了你。 |
+| **投递后端** | 内置 `file` / `gist` / `null` 三个**示例**：同机用 `file` 就够；跨机器该选哪一种，见上面[跨机器那一节](#跨机器信号怎么从产生端走到执行端)。**换成别的存储（对象存储、自建 HTTP、网络盘）得由你自己实现**：每家券商终端能读到的存储不一样，这里替不了你。实现完**不用改这个仓库** —— 后端类放仓库外，配置里指个路径（`SC_TRANSPORT=../x.py`），或装配时 `build_chain(transport=...)`；**取值写错会报错，不会悄悄退回 `file`**，因为那会让两端写到两处不同的存储、而两边日志都显示成功。 |
 | **不做回测** | 本框架和回测框架是**正交**的，不是竞争关系。把判断写成纯函数 `decide(ctx)`：回测时给 backtrader / qlib 写一层薄适配去调它，实盘时由本框架调**同一个函数**。**策略本体不写两遍 —— 两边各写一次的，是适配层。** 框架里没有回测引擎，也不打算有。 |
 | **单进程假设** | 「单一写入者」是**编码约定 + 运行时断言**，不是分布式锁。真要多进程并发写同一后端，得自己在外面加锁。 |
 | **已知缺口** | 产生端不去重（依赖「同秒同码同向只推一次」，在单进程下成立）。**缺口是写进 [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md) 的，不是悄悄补上的。** |

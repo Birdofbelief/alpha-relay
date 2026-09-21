@@ -31,7 +31,7 @@ from .notify import ConsoleNotifier, MultiNotifier, Notifier, NullNotifier
 from .paper import PaperExecutor
 from .runner import RoundResult, Runner, build_runner
 from .strategy import Strategy, load_strategy
-from .transport import FileTransport, NullTransport, Transport
+from .transport import Transport, load_transport
 
 log = logging.getLogger(__name__)
 
@@ -107,20 +107,6 @@ class Chain:
         return " | ".join(parts)
 
 
-def _build_transport(config: Config) -> Transport:
-    """按配置造后端。**缺凭据时降级到文件后端并告警，而不是带着空 token 发请求。**"""
-    kind = config.transport
-    if kind == "gist":
-        from .transport.gist import GistTransport
-        if not (config.gist_id and config.github_token):
-            log.error("× 配置为 gist 后端但凭据不全，**降级为文件后端**（不带着空凭据发请求）")
-            return FileTransport(config.channel_dir)
-        return GistTransport.from_env()
-    if kind == "null":
-        return NullTransport()
-    return FileTransport(config.channel_dir)
-
-
 def _build_notifier(config: Config, console: bool) -> Notifier:
     parts: list[Notifier] = []
     if config.serverchan_key:
@@ -138,6 +124,7 @@ def build_chain(
     *,
     strategy: Strategy | str | None = None,
     market: MarketData | None = None,
+    transport: Transport | None = None,
     calendar: TradingCalendar | None = None,
     notifier: Notifier | None = None,
     executor: Executor | None = None,
@@ -148,6 +135,16 @@ def build_chain(
     clock: Callable[[], datetime] | None = None,
 ) -> Chain:
     """按配置装一条链。未显式传入的部件按配置推断。
+
+    每个部件都是「**显式传入 > 配置 > 内置默认**」这一条优先级，
+    `transport=` 也不例外：
+
+        build_chain(config)                      # 按 config.transport 造
+        build_chain(config, transport=my_store)  # 用你给的这个，配置不管了
+
+    想换投递后端而不写代码，就把 `SC_TRANSPORT` 指到一个**仓库外**的
+    `.py` 文件路径上，见 `signalchain/transport/__init__.py` 的 `load_transport`。
+    ★ 名字写错了**会报错，不会退回文件后端** —— 理由在 `load_transport` 的 docstring 里。
 
     `executor=` 与 `with_executor=True` **互斥**：前者装上你给的那个，
     后者造一个内置的纸面执行端。两个一起给会直接报错，见下面的注释。
@@ -182,7 +179,10 @@ def build_chain(
             max_stale_days=config.max_stale_days,
         )
 
-    transport = _build_transport(config)
+    # 传输后端：显式传入 > 配置（内置名或仓库外路径）。
+    # ★ 这一句可能**抛异常** —— 取值不认识时不会悄悄退回文件后端，见 load_transport。
+    if transport is None:
+        transport = load_transport(config)
     runner = build_runner(
         config, strategy, market, transport, calendar,
         notifier=notifier or _build_notifier(config, console),

@@ -121,7 +121,10 @@ class Config:
             load_dotenv(dotenv)
         return cls(
             role=os.environ.get("SC_ROLE", "producer").strip().lower(),
-            transport=os.environ.get("SC_TRANSPORT", "file").strip().lower(),
+            # ★ 只 strip，**不 lower** —— 这个值除了内置名还可以是一个文件路径，
+            # 而大小写敏感的文件系统上，一个 .lower() 就足以把 `../MyStore.py`
+            # 变成「文件不存在」。内置名的大小写宽容交给 load_transport 去做。
+            transport=os.environ.get("SC_TRANSPORT", "file").strip(),
             runtime_dir=Path(os.environ.get("SC_RUNTIME_DIR", "./runtime")),
             strategy_path=os.environ.get("SC_STRATEGY_PATH") or None,
             gist_id=os.environ.get("SC_GIST_ID", "").strip(),
@@ -182,8 +185,10 @@ class Config:
         problems: list[str] = []
         if self.role not in ("producer", "executor"):
             problems.append(f"SC_ROLE 必须是 producer 或 executor，当前 {self.role!r}")
-        if self.transport not in ("file", "gist", "null"):
-            problems.append(f"SC_TRANSPORT 必须是 file/gist/null，当前 {self.transport!r}")
+        # SC_TRANSPORT 的取值**不在这里判**：它除了内置名还可以是一个仓库外
+        # 文件路径，只有 transport 那一层知道完整规则（`load_transport`），
+        # 而它判错的方式是**直接抛异常**，比这里出一行 warning 更响亮。
+        # 在 config 里再抄一份名字清单，等于制造第二个真相源。
         if self.transport == "gist":
             if not self.gist_id:
                 problems.append("gist 后端需要 SC_GIST_ID")
@@ -213,6 +218,9 @@ DOTENV_EXAMPLE = """\
 SC_ROLE=producer
 
 # 投递后端：file（本地文件，零凭据）/ gist（GitHub Gist）/ null（干跑）
+# ★ 也可以填一个**仓库外** .py 文件的路径 —— 里面写你自己的 Transport 子类
+#   （对象存储 / 自建 HTTP / 网络盘都行）。取值写错会**报错**，不会悄悄退回 file。
+# SC_TRANSPORT=../my_private_objectstore.py
 SC_TRANSPORT=file
 
 # 运行态目录：历史缓存、状态、channel 文件、日志都放这里

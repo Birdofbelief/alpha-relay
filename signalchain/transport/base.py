@@ -63,6 +63,12 @@ CHANNEL_OWNERS: dict[str, Role] = {
 }
 
 
+#: 随包一起发的后端名字。**这不是白名单** —— `SC_TRANSPORT` 还接受一个
+#: 指向仓库外 `.py` 文件的路径，见 `load_transport`。这里只是「不用写代码就能用」
+#: 的那几个。
+BUILTIN_TRANSPORTS: tuple[str, ...] = ("file", "gist", "null")
+
+
 class TransportError(RuntimeError):
     """传输层的可预期失败。调用方应当捕获并降级，而不是让它冒泡杀掉主循环。"""
 
