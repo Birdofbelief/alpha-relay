@@ -19,6 +19,34 @@
 """
 from __future__ import annotations
 
+# ──────────────────────────────────────────────────────────────
+# 直接运行本文件时的友好出口
+# ──────────────────────────────────────────────────────────────
+# 这个文件是「策略模块」，不是可执行脚本 —— 被 import 时它只定义一个类。
+# 但直接运行它（`py strategies/demo_rotation.py`）会先炸在下面那行 import 上：
+# 工作目录是 strategies/，仓库根不在 sys.path 里，于是找不到 `signalchain`。
+# 那个 traceback 对新手没有任何信息量，所以在这里给一个说人话的出口。
+#
+# ★ 这个块必须待在 signalchain 的 import **之前**。放到文件末尾是没用的 ——
+#   import 先失败，根本走不到那儿。（第一版就写在了末尾，被实测打回。）
+if __name__ == "__main__":
+    raise SystemExit(
+        "这个文件是「策略模块」，不是可执行脚本。\n"
+        "\n"
+        "要跑演示，请先切到仓库根目录，然后执行：\n"
+        "\n"
+        "    py -m signalchain.demo\n"
+        "\n"
+        "把它当库用：\n"
+        "\n"
+        "    from signalchain import build_file_chain\n"
+        "    chain = build_file_chain('./runtime')\n"
+        "\n"
+        "把**你自己的**策略接进来（策略放仓库外，不进公开历史）：\n"
+        "\n"
+        "    chain = build_file_chain('./runtime', strategy='./my_private.py')\n"
+    )
+
 from typing import Iterable, Sequence
 
 from signalchain.models import ACTION_BUY, ACTION_SELL, Signal
