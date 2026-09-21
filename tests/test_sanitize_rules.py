@@ -290,16 +290,20 @@ def test_load_denylist_handles_comments_and_missing_file(tmp_path):
 
 
 def _run_main(monkeypatch, capsys, argv, no_denylist=True):
-    """跑一遍 `main()`，拿到 `(退出码, stdout)`。
+    """跑一遍 `main()`，拿到 `(退出码, stdout, stderr)`。
 
     黑名单走 `SC_DENY_FILE` 指向一个不存在的路径 —— 这是**唯一**能可靠地
     「让黑名单为空」的办法：默认值会去仓库根找真文件，而本机那份是有的。
+
+    ★ stderr 也要收：本文件里好几条断言的对象**只在 stderr 上**（失败原因、
+    「这不是通过」这类话）。只看 stdout 的话，那些措辞退化了也测不出来。
     """
     if no_denylist:
         monkeypatch.setenv(san.DENY_FILE_ENV, str(REPO_ROOT / "不存在的黑名单.txt"))
     monkeypatch.setattr(san.sys, "argv", ["sanitize_check.py", *argv])
     rc = san.main()
-    return rc, capsys.readouterr().out
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
 
 
 def test_missing_denylist_is_reported_as_incomplete_not_as_pass(monkeypatch, capsys, tmp_path):
@@ -316,7 +320,7 @@ def test_missing_denylist_is_reported_as_incomplete_not_as_pass(monkeypatch, cap
     clean = tmp_path / "clean.py"
     clean.write_text("x = 1\n", encoding="utf-8")
 
-    rc, out = _run_main(monkeypatch, capsys, ["--path", str(clean)])
+    rc, out, _ = _run_main(monkeypatch, capsys, ["--path", str(clean)])
     assert rc == 0, out
     assert "不完整" in out, f"缺黑名单时必须明说不完整，实际输出：\n{out}"
     assert "✅" not in out, f"不能打绿勾 —— 那是「完整通过」才配用的符号：\n{out}"
@@ -325,7 +329,7 @@ def test_missing_denylist_is_reported_as_incomplete_not_as_pass(monkeypatch, cap
     deny = tmp_path / "deny.txt"
     deny.write_text("绝不出现的词\n", encoding="utf-8")
     monkeypatch.setenv(san.DENY_FILE_ENV, str(deny))
-    rc, out = _run_main(monkeypatch, capsys, ["--path", str(clean)], no_denylist=False)
+    rc, out, _ = _run_main(monkeypatch, capsys, ["--path", str(clean)], no_denylist=False)
     assert rc == 0, out
     assert "✅" in out and "不完整" not in out, f"有黑名单时应当报完整通过：\n{out}"
 
@@ -338,8 +342,41 @@ def test_zero_targets_is_a_failure_not_a_pass(monkeypatch, capsys):
     「代码全写好了、检查一次没跑过」那一刻的假绿灯。
     """
     monkeypatch.setattr(san, "_staged_files", lambda: [])
-    rc, out = _run_main(monkeypatch, capsys, ["--staged"])
+    rc, out, err = _run_main(monkeypatch, capsys, ["--staged"])
     assert rc == 2, f"零文件必须是失败，实际退出码 {rc}，输出：\n{out}"
+    assert "这不是通过" in err, f"失败原因必须写在 stderr 上：\n{err}"
+
+
+def test_unreadable_named_file_is_a_failure_not_a_pass(monkeypatch, capsys, tmp_path):
+    """★ `--path` **点名**的文件读不到时，退出码必须是 2，**不能是个绿勾**。
+
+    与上一条同一个病：`scan_paths` 遇到读不到的文件是 `continue`
+    （对 `--all` 是对的 —— 那是遍历途中文件恰好消失的竞态），
+    但 `--path` 是调用方亲口点名的文件，读不到就不是通过。
+
+    ★ 由实测而来，不是假想：同一个文件，路径用**双引号**经 Git Bash 传进来时
+    程序读不到，扫描器照样报「✅ 指定文件共 1 个，零命中」；换成**单引号**
+    就正常报红。也就是说路径写法错一点，输出与「真扫过且干净」逐字相同。
+    本文件存在的全部理由是「没检查的输出和通过一样」，它不该自己踩这一条。
+
+    ★ 两边都要断言。只测「不存在的路径返回 2」的话，一个**恒返回 2** 的
+    实现也能通过 —— 那正是本仓库反复吃过的那种测试（断言写反了，测试就一直
+    替 bug 背书）。所以必须配一条真实存在的文件做对照。
+    """
+    ghost = tmp_path / "并不存在.md"
+    rc, out, err = _run_main(monkeypatch, capsys, ["--path", str(ghost)])
+    assert rc == 2, f"点名的文件读不到必须是失败，实际退出码 {rc}，输出：\n{out}\n{err}"
+    assert "读不到" in err, f"必须说清是哪个文件读不到：\n{err}"
+    assert "✅" not in out, f"读不到文件绝不能打绿勾：\n{out}"
+
+    # 对照：同一个调用形态、只把路径换成真文件 → 必须回到 0
+    #（这里不要求绿勾：`_run_main` 默认让黑名单为空，那种情况**本来就该**
+    # 报「不完整」而不是 ✅ —— 上面那条测试专门盯这个区别。）
+    real = tmp_path / "真实存在.md"
+    real.write_text("x = 1\n", encoding="utf-8")
+    rc, out, err = _run_main(monkeypatch, capsys, ["--path", str(real)])
+    assert rc == 0, f"存在的文件应当通过，实际退出码 {rc}，输出：\n{out}\n{err}"
+    assert "读不到" not in err, f"文件明明读得到，不该报读不到：\n{err}"
 
 
 def test_the_documented_invocation_actually_prints_something(tmp_path):

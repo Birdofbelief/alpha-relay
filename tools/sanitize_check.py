@@ -297,6 +297,18 @@ def scan_text(path: str, text: str) -> list[Finding]:
     return findings
 
 
+def resolve(path: str) -> Path:
+    """把一个扫描目标解析成实际文件路径。**绝对路径直接采用，相对路径按仓库根解析。**
+
+    ★ 单独抽出来，是因为「这个字符串到底指哪个文件」必须**只有一个定义**：
+    `scan_paths` 判「读不读得到」、`main` 判「调用方点名的文件在不在」，
+    两处若各写一遍，迟早会分叉 —— 而分叉的表现是「一处说没问题、另一处说不在」，
+    最难查的那种。
+    """
+    p = Path(path.replace(os.sep, "/"))
+    return p if p.is_absolute() else REPO_ROOT / p
+
+
 def scan_paths(paths: list[str], denylist: list[str] | None = None) -> list[Finding]:
     """扫描一组路径。`paths` 可以是仓库相对路径，也可以是绝对路径。
 
@@ -331,8 +343,7 @@ def scan_paths(paths: list[str], denylist: list[str] | None = None) -> list[Find
                 break
 
         # 绝对路径直接采用；相对路径按仓库根解析。
-        p = Path(norm)
-        full = p if p.is_absolute() else REPO_ROOT / p
+        full = resolve(norm)
         if not full.is_file():
             continue
         try:
@@ -377,6 +388,28 @@ def main() -> int:
         print("   零文件等于没检查；而没检查的终端输出和通过是一样的。"
               "请确认仓库已 git init，或改用 --all。", file=sys.stderr)
         return 2
+
+    # ★ 「点名了文件、却一个都读不到」与「一个文件都没给」是同一个病，必须一起拦。
+    #
+    #   `scan_paths` 遇到读不到的文件是 `continue` —— 这对 `--all`/`--staged` 是对的
+    #   （那是遍历途中文件恰好消失的竞态，不该因此中断整轮）。但 `--path` 是
+    #   **调用方亲口点名的文件**：读不到就不是通过。否则路径写错一个字符，输出与
+    #   「真扫过且干净」**逐字相同** —— 一行绿色的「零命中」。
+    #
+    #   这不是假想：本条的由来就是实测。`--path 'C:\Users\Public\x\bad.md'` 用双引号
+    #   经 Git Bash 传进来时读不到文件，扫描器照样报「✅ 指定文件共 1 个，零命中」，
+    #   而同一个文件用单引号传就正常报红。**探针失效与探针通过长得一样**，正是本
+    #   文件存在的理由，它不该自己踩这一条。
+    if args.path:
+        unreadable = [t for t in args.path if not resolve(t).is_file()]
+        if unreadable:
+            print(f"💥 指定的 {len(unreadable)}/{len(args.path)} 个文件读不到"
+                  f" —— **这不是通过**。", file=sys.stderr)
+            for t in unreadable:
+                print(f"   读不到：{t}", file=sys.stderr)
+            print("   路径错一个字符、或写法程序读不懂，结果都和「扫过且干净」一样。",
+                  file=sys.stderr)
+            return 2
 
     findings = scan_paths(targets, denylist=denylist)
 
