@@ -1,16 +1,47 @@
 # signal-chain
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-238%20offline-brightgreen.svg)](#跑测试)
+[![Runtime deps](https://img.shields.io/badge/runtime%20deps-requests%20%2B%20pandas-informational.svg)](pyproject.toml)
+[![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
+
 **把「策略」和「把策略的信号安全送到券商」拆开的框架。**
 
 策略只需要实现一个 `decide(ctx)`；取数、数据质量校验、风控闸门、投递、重试、
 回执、持仓对账、调度、心跳、告警，全部由链路负责。
 
-投递后端可拔插（Gist / 本地文件 / 空实现 / 预留 HTTP），
+投递后端可拔插（Gist / 本地文件 / 空实现），
 策略可从**仓库外路径**加载 —— 你的 alpha 永远不会进这个仓库。
 
 ```
 零凭据、零网络、零券商也能完整跑通：py -m signalchain.demo
 ```
+
+> **English** — *signal-chain* decouples a trading strategy from the plumbing that
+> delivers its signals safely. Your strategy implements one pure function, `decide(ctx)`;
+> the framework owns market data, data-quality gates, risk gates, delivery, retries,
+> execution receipts, position reconciliation, scheduling, heartbeats and alerting.
+> Delivery backends are pluggable (GitHub Gist / local file / null), and **strategies are
+> loaded from paths outside this repository — your alpha never enters it.**
+> The chain runs end to end with **zero credentials, zero network and zero broker**:
+> `py -m signalchain.demo`. Design notes and reference docs are written in Chinese;
+> this README is the entry point.
+
+---
+
+## 目录
+
+- [它解决什么问题](#它解决什么问题)
+- [一分钟看懂](#一分钟看懂)
+- [三条贯穿全库的主张](#三条贯穿全库的主张)
+- [快速上手](#快速上手)
+- [跑测试](#跑测试)
+- [关于「零凭据」](#关于零凭据)
+- [现状与边界](#现状与边界)
+- [文档](#文档)
+- [环境](#环境)
+- [License](#license)
 
 ---
 
@@ -29,10 +60,10 @@
 |---|---|---|
 | `Strategy` | 你的 alpha。**只实现 `decide(ctx)`，不碰任何 I/O** | 任何策略，包括仓库外的私有策略 |
 | `MarketData` | 行情与历史 | 在线接口 / 本地缓存装饰器 / 假数据 |
-| `Transport` | 投递与读取 | Gist / 本地文件 / 空实现 / 预留 HTTP |
+| `Transport` | 投递与读取 | Gist / 本地文件 / 空实现 |
 | `Gate` | 风控（与策略无关） | 三个内置闸门，可增删 |
 | `Runner` | 调度、时间预算、失败上限、心跳 | —— |
-| `PaperExecutor` | 本地纸面成交（无券商） | 真券商客户端 |
+| `PaperExecutor` | 本地纸面成交（无券商） | 真券商客户端（见[现状与边界](#现状与边界)） |
 
 ### 一分钟看懂
 
@@ -50,8 +81,7 @@
  Signal │            Transport（★ 可拔插）               │
         │             ├─ GistTransport                  │
         │             ├─ FileTransport   ← 演示/测试默认  │
-        │             ├─ NullTransport   ← dry-run       │
-        │             └─ （HTTP 等）← 实现三个方法即可      │
+        │             └─ NullTransport   ← dry-run       │
         │                    │                          │
         │     回执 ◀─────────┘                          │
         └──────────────────────────────────────────────┘
@@ -175,14 +205,80 @@ class MyStrategy(Strategy):
   回放同一天的行情会生成一批全新 id，「这条处理过没有」就永远答「没有」。
 - `decide()` 可以返回列表，也可以是生成器。
 
+### 它实际跑起来是什么样
+
+下面是 `py -m signalchain.demo` 的真实输出（只做了两处删减：临时目录路径、
+与本节无关的重复轮次）。四段值得注意的地方：
+
+**① 所有权绑在「角色」上，不是绑在「进程」上。** 纸面执行器就在同一个进程里，
+但产生端身份的 guard 依然写不了 `positions`：
+
+```
+  role=producer | 策略=demo_rotation(池3只/预热30根) | 行情=fake(3只) | 传输=file:…\channels
+
+  → 实测：产生端试写 positions channel ⇒ OwnershipError
+     拒绝写入 channel 'positions'：它属于 executor，而本进程的角色是 producer。
+```
+
+**② 回执有两种互斥形状，同一个数组里按 `status` 分辨。** 取错字段**不会报错**，
+只会静默拿到 `None` 或 `0`：
+
+```json
+[
+  {
+    "signal_id": "20260918144500_510050.XSHG_buy",
+    "code": "510050.XSHG", "action": "buy",
+    "status": "filled",
+    "order_id": "paper-20260918144500_510050.XSHG_buy",
+    "price": 1.034, "amount": 9600,
+    "time": "2026-09-18 14:45:00"
+  },
+  {
+    "signal_id": "20260918154500_510500.XSHG_buy",
+    "code": "510500.XSHG", "action": "buy",
+    "status": "submitted",
+    "reason": "市价 1.1040 高于限价 0.9936，挂单等待",
+    "time": "2026-09-18 15:45:00"
+  }
+]
+```
+
+> ★ 终态（`filled` / `canceled`）带 `order_id` / `price` / `amount`，**没有 `reason`**；
+> 非终态（`submitted` / `skipped`）带 `reason`，**没有 `order_id` / `price` / `amount`**。
+> 详见 [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md)。
+
+**③ 三个闸门的失效方向故意不一样。** 同一条买入信号，在不同数据质量下的判定：
+
+```
+  一切正常                       → 买入✅  卖出✅
+  行情失效（缺失/NaN/非正）            → 买入⛔  卖出⛔
+  未完成持仓对账                    → 买入⛔  卖出✅
+  辅助数据整体缺失                   → 买入⛔  卖出✅
+```
+
+闸门链刻意**不短路**：一条信号同时触发多道时，理由会全部记下。
+
+**④ 闭环的终点是真实字节。** 跑完之后目录里躺着的是：
+
+```
+    executions.json  (1038 字节)
+    heartbeat.json  (88 字节)
+    positions.json  (216 字节)
+    trade_signals.json  (953 字节)
+```
+
+完整输出有 182 行，每次跑都会打印 —— 直接跑一遍最快。`--keep` 可以保留运行目录。
 
 ---
 
 ## 跑测试
 
 ```bash
-py -m pytest              # 截至 2026-09-20：238 项，全部离线，不需要任何凭据
+py -m pytest              # 238 项，全部离线，不需要任何凭据
 ```
+
+> 上面的数字与徽章是**手工维护**的，会随代码变化。**以你本地实测为准**：
+> `py -m pytest` 看退出码（0 = 全过）。
 
 测试覆盖面（值得单说的几组）：
 
@@ -194,6 +290,7 @@ py -m pytest              # 截至 2026-09-20：238 项，全部离线，不需�
 | `test_end_to_end.py` | 接缝：读磁盘上的**真实字节**，不复用解析器 |
 | `test_sanitize_rules.py` | **脱敏扫描器自己的测试** —— 一个只会静默失效的检查器 |
 | `test_docs_tripwire.py` | 文档里承诺的 API 真的存在（并且真的能跑） |
+| `test_fake_determinism.py` | 假行情必须**逐值钉死**，而且**换进程、换 hash 种子也一样** —— 否则「回放」是在掷骰子 |
 
 ---
 
@@ -237,6 +334,33 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 
 ---
 
+## 现状与边界
+
+写清楚这个项目**现在是什么**，比写它能做什么更重要。
+
+| 项 | 说明 |
+|---|---|
+| **设计来源** | 这套分层、闸门方向、单一写入者约定，来自一个**真实在跑的实盘系统**（单文件形态，经 Gist 投递、券商端执行）。文档里那些「为什么」不是推演出来的。 |
+| **本仓库的状态** | ⚠️ **它是从上面那套系统里独立提取出来的，尚未替换线上。** 也就是说：**设计经过实战，这份提取产物本身还没有在生产上跑过。** 请按「可用的框架 + 未经实战的组装」看待它。 |
+| **测试证明了什么** | 238 项全离线，验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权）。它**不验证任何策略的收益**。 |
+| **没有的东西** | 没有券商客户端 —— 仓库里只有 `PaperExecutor`；没有仓库内的 HTTP 投递后端（该方案被否决过，且**没有留空壳接口**：一个不能用的类不是扩展点，是噪音。要加只需实现 `Transport` 的三个方法）；没有 Web UI、没有数据库、没有回测引擎。 |
+| **单进程假设** | 「单一写入者」是**编码约定 + 运行时断言**，不是分布式锁。真要多进程并发写同一后端，得自己在外面加锁。 |
+| **已知缺口** | 产生端不去重（依赖「同秒同码同向只推一次」，在单进程下成立）。**缺口是写进 [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md) 的，不是悄悄补上的。** |
+
+### 如果只能记一条
+
+> **每个「失败时怎么办」都要问一遍「反过来做会怎样」，并把这个判断写进代码旁边。**
+
+本仓库所有 fail-closed 的方向都不是从「保守」推出来的，是从**「哪边错了更疼」**
+推出来的。两者的结论在三个闸门里**全都不一样** —— 这正是这条规则值得单独存在的理由：
+
+> 如果「保守」就能得出正确答案，那就不需要判断了。
+> 需要判断的地方，恰恰是「保守」会给出错答案的地方。
+
+更多取舍见 [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md)。
+
+---
+
 ## 文档
 
 | 文件 | 内容 |
@@ -245,13 +369,14 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 | [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md) | **线格式契约**：四个 channel 的字段、后缀、时间格式，以及那些「看起来该统一、实际不能统一」的地方 |
 | [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) | 设计主张与取舍：失效方向、幂等、时间预算、网络韧性 |
 | [`docs/SANITIZATION.md`](docs/SANITIZATION.md) | 脱敏清单 + 扫描器用法 + **黑名单怎么建** |
-| [`docs/MIGRATION.md`](docs/MIGRATION.md) | 从「单文件脚本」迁到本框架的路径 |
+| [`docs/MIGRATION.md`](docs/MIGRATION.md) | 从「单文件脚本」迁到本框架的路径；也写了**什么时候不该迁** |
 
 ## 环境
 
 - Python ≥ 3.10
 - 运行时依赖只有 `requests` + `pandas`
 - `akshare` 是**可选**依赖（只有 `TradingCalendar.refresh()` 需要；不装可用静态日历）
+- 使用方式是「clone 下来直接跑」，**不需要 `pip install`**（见 [`pyproject.toml`](pyproject.toml)）
 
 ## License
 
