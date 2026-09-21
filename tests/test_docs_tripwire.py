@@ -16,7 +16,7 @@ README 和 docstring 里的示例代码是**读者唯一会照着敲的东西**�
     chain = build_file_chain("./runtime")
     chain.run_once()
 
-三个名字**全是坏的** —— `DemoStrategy` 的真名是 `DemoRotationStrategy`；
+三个名字**全是坏的** —— `DemoStrategy` 的真名是 `DemoBasicStrategy`；
 `build_file_chain` 当时没被导出；`Chain` 上根本没有 `run_once()` 这个方法。
 三处都得靠执行才发现，而没有任何测试在执行它。
 
@@ -139,11 +139,11 @@ def test_the_quickstart_strategy_argument_is_the_documented_keyword(tmp_path):
     关键字名改了的后果不是报错 —— 是 `TypeError: unexpected keyword argument`，
     而读者会去怀疑自己的策略文件。
     """
-    from strategies.demo_rotation import DemoRotationStrategy
+    from strategies.demo_basic import DemoBasicStrategy
 
     from signalchain import build_file_chain
 
-    chain = build_file_chain(tmp_path / "runtime", strategy=DemoRotationStrategy(),
+    chain = build_file_chain(tmp_path / "runtime", strategy=DemoBasicStrategy(),
                              console=False)
     assert chain.step()[0].ok
 

@@ -28,7 +28,7 @@ from signalchain.strategy import (
     StrategyContext,
     load_strategy,
 )
-from strategies.demo_rotation import DemoRotationStrategy
+from strategies.demo_basic import DemoBasicStrategy
 
 from .conftest import CLEAN_CODES, FIXED_NOW
 
@@ -118,7 +118,7 @@ def test_decide_performs_no_io(tripwire):
     这条测试就是「纯函数」这句要求的可执行版本。它拦的是**策略**发起的调用，
     框架的取数不受影响 —— 界限看的是调用栈，不是「有没有发生 I/O」。
     """
-    strategy = DemoRotationStrategy()
+    strategy = DemoBasicStrategy()
     ctx = _context()
     ctx.load_quotes(strategy.universe())
     list(strategy.decide(ctx))
@@ -163,7 +163,7 @@ def test_decide_is_deterministic_given_the_same_context():
     这是「可回放」的全部含义。id 一致尤其关键：它是执行端的幂等键，
     回放时若 id 变了，「这条处理过没有」就永远答「没有」，重放会变成重复下单。
     """
-    strategy = DemoRotationStrategy()
+    strategy = DemoBasicStrategy()
     runs = []
     for _ in range(2):
         ctx = _context()
@@ -179,7 +179,7 @@ def test_signal_timestamps_come_from_ctx_not_the_wall_clock():
     若取墙上时钟，回放同一天的行情会生成一批全新的 signal id ——
     这正是上面那条「确定性」被破坏的具体形状，所以单独钉一条。
     """
-    strategy = DemoRotationStrategy()
+    strategy = DemoBasicStrategy()
     ctx = _context()
     ctx.load_quotes(strategy.universe())
     signals = list(strategy.decide(ctx))
@@ -196,7 +196,7 @@ def test_decide_tolerates_halted_symbols():
     停牌是**正常**事件。把它当成异常会让策略在任意一只标的停牌时瘫痪，
     而停牌恰恰是那种「一年会遇到好几次」的日常。
     """
-    strategy = DemoRotationStrategy()
+    strategy = DemoBasicStrategy()
     market = FakeMarketData(list(CLEAN_CODES), halt={CLEAN_CODES[1]}, drift=0.002)
     market.now = FIXED_NOW
     ctx = StrategyContext(now=FIXED_NOW, calendar=_cal(), market=market)
@@ -212,7 +212,7 @@ def test_decide_stops_when_quotes_are_incomplete():
     注意方向：**允许**策略比闸门保守，但**不允许**反过来依赖策略来保证安全
     —— 闸门必须在策略忘记检查时也生效（那由 test_gates.py 负责）。
     """
-    strategy = DemoRotationStrategy()
+    strategy = DemoBasicStrategy()
     market = FakeMarketData(list(CLEAN_CODES), missing={CLEAN_CODES[0]}, drift=0.002)
     market.now = FIXED_NOW
     ctx = StrategyContext(now=FIXED_NOW, calendar=_cal(), market=market)
@@ -305,7 +305,7 @@ def test_state_only_marks_dirty_on_real_change():
 # ------------------------------------------------------------
 def test_load_builtin_demo_strategy():
     strategy = load_strategy("demo")
-    assert isinstance(strategy, DemoRotationStrategy)
+    assert isinstance(strategy, DemoBasicStrategy)
     assert strategy.universe()
 
 

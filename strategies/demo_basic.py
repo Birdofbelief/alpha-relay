@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""演示策略：N 日收益排名轮动。
+"""演示策略：N 日收益率排序取前几名。
 
     ⚠️ 这是一个**示例**，不是、也不该被用作实盘策略。
 
@@ -23,7 +23,7 @@ from __future__ import annotations
 # 直接运行本文件时的友好出口
 # ──────────────────────────────────────────────────────────────
 # 这个文件是「策略模块」，不是可执行脚本 —— 被 import 时它只定义一个类。
-# 但直接运行它（`py strategies/demo_rotation.py`）会先炸在下面那行 import 上：
+# 但直接运行它（`py strategies/demo_basic.py`）会先炸在下面那行 import 上：
 # 工作目录是 strategies/，仓库根不在 sys.path 里，于是找不到 `signalchain`。
 # 那个 traceback 对新手没有任何信息量，所以在这里给一个说人话的出口。
 #
@@ -70,8 +70,8 @@ HOLD_TOP = 1       # 持有排名前几
 LOT_CASH = 10000   # 每次买入用多少钱（示例值）
 
 
-class DemoRotationStrategy(Strategy):
-    name = "demo_rotation"
+class DemoBasicStrategy(Strategy):
+    name = "demo_basic"
 
     def universe(self) -> Sequence[str]:
         return list(DEMO_UNIVERSE)

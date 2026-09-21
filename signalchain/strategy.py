@@ -329,9 +329,9 @@ def load_strategy(target: str) -> Strategy:
     ⚠️ 按路径加载 = 执行该文件里的任意代码。只指向你自己的文件，
     绝不要指向下载来的、别人给的路径。
     """
-    if target in ("demo", "demo_rotation"):
-        from strategies.demo_rotation import DemoRotationStrategy
-        return DemoRotationStrategy()
+    if target in ("demo", "demo_basic"):
+        from strategies.demo_basic import DemoBasicStrategy
+        return DemoBasicStrategy()
 
     path = Path(target)
     if not path.exists():

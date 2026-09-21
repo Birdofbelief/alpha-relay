@@ -371,8 +371,8 @@ def test_demo_strategy_does_not_trip_the_author_markers():
     （这条原来打的是内置规则；规则搬出仓库后，它跟着清单走。）
     """
     markers = san.load_markers(_AUTHOR_MARKERS).rules
-    demo = (REPO_ROOT / "strategies" / "demo_rotation.py").read_text(encoding="utf-8")
-    assert san.scan_text("strategies/demo_rotation.py", demo, markers) == []
+    demo = (REPO_ROOT / "strategies" / "demo_basic.py").read_text(encoding="utf-8")
+    assert san.scan_text("strategies/demo_basic.py", demo, markers) == []
 
 
 # ============================================================

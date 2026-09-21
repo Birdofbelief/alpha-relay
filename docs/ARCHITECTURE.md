@@ -55,7 +55,7 @@ signalchain/
 ├── runner.py        ★ 调度、时间预算、失败上限、心跳严重度
 └── chain.py         装配（build_chain / build_file_chain）
 
-strategies/demo_rotation.py   示例策略（**明确非实盘**，只证明框架与策略无关）
+strategies/demo_basic.py      示例策略（**明确非实盘**，只证明框架与策略无关）
 tools/sanitize_check.py       脱敏门禁（装成 pre-commit 钩子，见 SANITIZATION.md）
 tests/                        含 golden 线格式、传输契约、端到端接缝测试
 ```

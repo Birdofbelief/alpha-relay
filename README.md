@@ -173,7 +173,7 @@ py -m signalchain.demo
 > 里面打印的东西（不管成功还是报错）你根本来不及看。`demo.cmd` 就是为这个
 > 存在的：它跑完会**停住等你按键**，失败时还会把常见原因列出来。
 >
-> 顺带一提，直接双击 `strategies/demo_rotation.py` 看到的那个黑框也是同一个
+> 顺带一提，直接双击 `strategies/demo_basic.py` 看到的那个黑框也是同一个
 > 问题，且那时它其实在报 `ModuleNotFoundError` —— 那个文件是**策略模块**不是
 > 脚本，它在这里就等着告诉你该跑哪个命令。
 
@@ -198,7 +198,7 @@ chain = build_file_chain("./runtime", strategy="./my_private.py")
 或设环境变量 `SC_STRATEGY_PATH`。`.gitignore` 另外兜了一层
 （`strategies/private*`）—— 但真正的保障是**它根本不在这个仓库里**。
 
-一个策略的最小形态（与 [`strategies/demo_rotation.py`](strategies/demo_rotation.py) 同结构，
+一个策略的最小形态（与 [`strategies/demo_basic.py`](strategies/demo_basic.py) 同结构，
 `tests/test_strategy_contract.py` 里有一份等价的实现被真的跑过）：
 
 ```python
@@ -246,7 +246,7 @@ class MyStrategy(Strategy):
 但产生端身份的 guard 依然写不了 `positions`：
 
 ```
-  role=producer | 策略=demo_rotation(池3只/预热30根) | 行情=fake(3只) | 传输=file:…\channels
+  role=producer | 策略=demo_basic(池3只/预热30根) | 行情=fake(3只) | 传输=file:…\channels
 
   → 实测：产生端试写 positions channel ⇒ OwnershipError
      拒绝写入 channel 'positions'：它属于 executor，而本进程的角色是 producer。
