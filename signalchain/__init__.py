@@ -12,7 +12,8 @@
 
     Strategy     ← 你的 alpha。只实现 decide(ctx)，不碰任何 I/O
     MarketData   ← 行情。可换成假数据、加缓存、加重试
-    Transport    ← 投递。可换成 Gist / 文件 / HTTP / 空实现
+    Transport    ← 投递。可换成 文件 / Gist / 空实现，或你自己实现的后端
+    Executor     ← 执行端。把信号变成委托 —— 本仓库只带一个纸面占位
     Gate         ← 风控。fail-closed，且与策略无关
     Runner       ← 调度。时间预算、失败上限、心跳
 
@@ -27,9 +28,11 @@
    判断依据是「哪边错了更疼」而不是「哪边更保守」。
 
 3. **单一写入者不是风格偏好，是当前唯一能消除竞态的手段。**
-   GitHub Gist 的更新是 read-modify-write，非原子。两个写者同时改同一个
-   gist，后写的会静默覆盖先写的。所以 channel 的所有权写在代码里
-   （`transport/base.py` 的 `CHANNEL_OWNERS`），写错直接抛异常。
+   凡是靠 read-modify-write 实现「往列表里追加」的后端都不原子 ——
+   内置的 `gist` 后端正是这样一个例子。两个写者同时改同一份文档，
+   后写的会**静默**覆盖先写的，而两边日志都显示成功。
+   所以 channel 的所有权写在代码里（`transport/base.py` 的 `CHANNEL_OWNERS`），
+   写错直接抛异常，而不是打个警告。
 
 ## 最快上手
 
@@ -57,6 +60,7 @@ __version__ = "0.1.0"
 
 from .calendar import TradingCalendar, make_static_calendar, weekday_calendar
 from .chain import Chain, build_chain, build_file_chain
+from .executor import Executor
 from .gates import (
     AuxDataGate,
     DataQuality,
@@ -109,6 +113,8 @@ __all__ = [
     "to_jq", "to_bare", "ACTION_BUY", "ACTION_SELL",
     # 装配
     "Chain", "build_chain", "build_file_chain",
+    # 执行端契约 —— 接自己的券商执行端时要 `from signalchain import Executor`
+    "Executor",
     # 策略侧 —— 这是框架的**主要扩展点**，必须能从包根拿到。
     # （它曾经没被导出：README 写 `from signalchain import Strategy`，
     #   而读者照着敲会得到 ImportError。tests/test_docs_tripwire.py 抓到的。）

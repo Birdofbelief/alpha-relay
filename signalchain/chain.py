@@ -24,6 +24,7 @@ from typing import Callable, Sequence
 
 from .calendar import TradingCalendar, weekday_calendar
 from .config import Config
+from .executor import Executor
 from .marketdata import FakeMarketData
 from .marketdata.base import MarketData
 from .notify import ConsoleNotifier, MultiNotifier, Notifier, NullNotifier
@@ -65,7 +66,9 @@ class Chain:
     #: ★ 裸后端，**没有 guard**。读写 channel 请走 runner/executor 上的把手。
     raw_transport: Transport
     runner: Runner
-    executor: PaperExecutor | None = None
+    #: 执行端。**契约是 `Executor` 那三个方法**，不必是 `PaperExecutor` ——
+    #: 装上你自己的券商执行端就是换这一个参数，产生端一行不动。
+    executor: Executor | None = None
 
     @property
     def guarded_transport(self) -> Transport:
@@ -137,13 +140,18 @@ def build_chain(
     market: MarketData | None = None,
     calendar: TradingCalendar | None = None,
     notifier: Notifier | None = None,
+    executor: Executor | None = None,
     with_executor: bool = False,
     initial_cash: float = 100_000.0,
     console: bool = True,
     schedule: Sequence[tuple[str, str]] | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> Chain:
-    """按配置装一条链。未显式传入的部件按配置推断。"""
+    """按配置装一条链。未显式传入的部件按配置推断。
+
+    `executor=` 与 `with_executor=True` **互斥**：前者装上你给的那个，
+    后者造一个内置的纸面执行端。两个一起给会直接报错，见下面的注释。
+    """
     config = config or Config.from_env()
     config.ensure_dirs()
 
@@ -183,8 +191,17 @@ def build_chain(
     if clock is not None:
         runner.clock = clock
 
-    executor = None
-    if with_executor:
+    # 执行端：显式传入 > with_executor 造一个纸面执行端 > 不装。
+    #
+    # 两个都给 = 两种指定方式冲突，**直接报错、不猜**。这与
+    # 「策略文件里有多个 Strategy 子类时必须显式指定」是同一条纪律：
+    # 静默选中一个的代价是「你以为跑的是 A，实际跑的是 B」—— 而它不报错，
+    # 表现上跟「今天没有信号」长得一模一样。
+    if executor is not None and with_executor:
+        raise ValueError(
+            "executor= 与 with_executor=True 同时给了 —— 这是两种互斥的指定方式，"
+            "框架不替你猜。想用内置纸面执行端，就只给 with_executor=True。")
+    if executor is None and with_executor:
         executor = PaperExecutor(config, market, transport, initial_cash=initial_cash)
 
     return Chain(config=config, calendar=calendar, market=market,
@@ -204,11 +221,16 @@ def build_file_chain(
     start: str = "2026-01-01",
     end: str = "2026-12-31",
     console: bool = True,
+    executor: Executor | None = None,
 ) -> Chain:
     """**零凭据、零网络**的链：文件后端 + 假行情 + 纸面执行器。
 
     `demo.py`、绝大多数测试、以及「想先看看这东西长什么样」的人，都走这条路。
     它跑通就说明链路本身是完整的 —— 与「有没有配好账号」无关。
+
+    传 `executor=` 可以换掉那个纸面执行端，其余一律不变 ——
+    这是「接自己的券商执行端」最短的一条验证路径：先用假行情把执行端接上，
+    确认它真的被调到了、回执真的写回来了，再去接真行情。
     """
     config = Config(role="producer", transport="file",
                     runtime_dir=Path(runtime_dir))
@@ -225,7 +247,10 @@ def build_file_chain(
 
     return build_chain(
         config, strategy=strategy, market=market, calendar=calendar,
-        with_executor=True, initial_cash=initial_cash, console=console,
+        executor=executor,
+        # 没给就用内置纸面执行端；给了就绝不覆盖它。
+        with_executor=executor is None,
+        initial_cash=initial_cash, console=console,
         schedule=[],
     )
 
