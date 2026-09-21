@@ -1,0 +1,54 @@
+name: tests
+
+# 每次 push 和每个 PR 都跑一遍。测试全部离线 —— 不需要凭据、不碰网络、
+# 不连券商，所以 CI 里跑的和你在本机跑的是同一件事。
+on:
+  push:
+  pull_request:
+
+# 只读即可：这个 workflow 不写任何东西回仓库。
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: py${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+        exclude:
+          # 3.10 是声明的下限，单独在 Linux 上验一次就够；
+          # Windows 上跑中间与最新版，省一半 CI 时间。
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.12"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # 刻意不 `pip install .` —— 本项目的用法是「clone 下来直接跑」，
+      # pyproject.toml 里的 pythonpath=["."] 已经让 `python -m pytest` 在仓库根可用。
+      # 只装运行时依赖 + pytest。
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests pandas pytest
+
+      - name: 跑测试（238 项，全离线）
+        run: python -m pytest
+
+      # 脱敏扫描也进 CI：本地那个 pre-commit 钩子靠 core.hooksPath，
+      # 而那是本机配置、不随 clone 带走 —— 也就是说**别人克隆下来默认是不设防的**。
+      # 这里补一道服务端的。
+      # 注意：CI 里没有 .sanitize-deny.txt（它被 gitignore 挡住，刻意不入库），
+      # 所以扫描器会自行降级并明确打印「不完整」—— 这是预期行为，不是失败。
+      - name: 脱敏扫描（零凭据）
+        run: python tools/sanitize_check.py --all

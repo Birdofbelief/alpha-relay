@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-238%20offline-brightgreen.svg)](#跑测试)
+[![tests](https://github.com/Birdofbelief/signal-chain/actions/workflows/tests.yml/badge.svg)](https://github.com/Birdofbelief/signal-chain/actions/workflows/tests.yml)
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-requests%20%2B%20pandas-informational.svg)](pyproject.toml)
 [![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
 
@@ -32,6 +32,7 @@
 
 ## 目录
 
+- [为什么会有这个东西](#为什么会有这个东西)
 - [它解决什么问题](#它解决什么问题)
 - [一分钟看懂](#一分钟看懂)
 - [三条贯穿全库的主张](#三条贯穿全库的主张)
@@ -42,6 +43,27 @@
 - [文档](#文档)
 - [环境](#环境)
 - [License](#license)
+
+---
+
+## 为什么会有这个东西
+
+这不是一个「我想写个框架」的产物。它是一条**真实在跑的实盘链路**的提取物 ——
+原始形态是一个单文件脚本，经 Gist 投递信号、券商端执行。
+
+把它拆出来的理由只有一条：**基础设施可以公开，alpha 不行。**
+
+而在拆的过程中，真正被沉淀下来的其实不是代码，是几个**用实盘亏损换来的判断**：
+
+- 数据出错时该停哪一半 → 按「哪边错了更疼」定，**不按「哪边更保守」**；
+- 两个写者同时改同一个 Gist 会怎样 → 后写的**静默**覆盖先写的；
+- 重试会不会变成重复下单 → 幂等键必须能从回放里复现。
+
+> 如果「保守」就能得出正确答案，那就不需要判断了。
+> 需要判断的地方，恰恰是「保守」会给出错答案的地方。
+
+**所以这个仓库里最值钱的东西不在 `signalchain/` 里，在
+[`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) 里。**
 
 ---
 
@@ -277,7 +299,15 @@ class MyStrategy(Strategy):
 py -m pytest              # 238 项，全部离线，不需要任何凭据
 ```
 
-> 上面的数字与徽章是**手工维护**的，会随代码变化。**以你本地实测为准**：
+同一套测试也跑在 CI 上（Ubuntu + Windows × Python 3.10 / 3.12 / 3.13，
+见 [`.github/workflows/tests.yml`](.github/workflows/tests.yml)）——
+顶部那个徽章就是它的**实时结果**，不是手写的。
+
+CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `core.hooksPath`，
+而那是**本机配置、不随 clone 带走** —— 也就是说别人克隆下来默认是不设防的，
+所以服务端补一道。
+
+> 上面那个 **238** 是手工写的，会随代码变化。**以实测为准**：
 > `py -m pytest` 看退出码（0 = 全过）。
 
 测试覆盖面（值得单说的几组）：
