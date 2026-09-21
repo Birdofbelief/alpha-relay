@@ -17,7 +17,8 @@
     py tools/sanitize_check.py --all      # 扫描工作区全部文件（含未跟踪）
     py tools/sanitize_check.py --staged   # 只扫描暂存区（pre-commit 钩子用）
 
-退出码：0 = 干净；1 = 有命中。
+退出码：0 = 干净；1 = 有命中；**2 = 结果无效**（扫描器自己出错 ——
+不是「通过」，也不是「命中」，别把 2 读成好消息）。
 """
 from __future__ import annotations
 
@@ -28,6 +29,32 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple, Sequence
+
+# ------------------------------------------------------------
+# 输出编码：**必须抢在任何 print 之前**，否则本脚本会在 Windows 上静默变红。
+#
+# Windows 上不带 `PYTHONUTF8=1` 时，stdout 的编码是控制台代码页（简体中文机器上是
+# GBK，CI 的 windows-latest 上是 cp1252），而本脚本要打印 ℹ️ / ⚠️ / ✅。
+# 这些字符不在 GBK 里 ⇒ `print()` 抛 UnicodeEncodeError ⇒ 进程死在 main() 里。
+#
+# ★ 实测（2026-09-21，本机 `py -X utf8=0 tools/sanitize_check.py --all`）：
+#     UnicodeEncodeError: 'gbk' codec can't encode character 'ℹ'
+#     GATE_EXIT=2
+#   同一原因让 `tests/test_sanitize_rules.py` 里那条「文档里的调用方式必须有输出」
+#   的回归测试也变红（它起子进程调本脚本）。**一个根因，两个症状。**
+#   而 3 个 ubuntu job 全绿 —— 因为 Linux 默认就是 UTF-8，本地开发机也设了
+#   PYTHONUTF8=1 ⇒ 这个坑只在「别人 clone 下来在 Windows 上跑」时现形。
+#
+# 强制 UTF-8：真控制台上 Python 走 WriteConsoleW 渲染，与代码页无关；
+# 重定向到管道/文件时，日志也因此是 UTF-8 而不是 GBK。
+# errors="replace" 是兜底 —— 宁可把一个 emoji 打成 "?"，**也绝不因为「打印不出来」而崩**。
+# 这跟文件末尾那条纪律是同一条：检查器不许有安静的失效路径。
+# ------------------------------------------------------------
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):   # 不是 TextIOWrapper（被别的工具包过 / 已关闭）
+        pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

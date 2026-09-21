@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -613,12 +614,28 @@ def test_the_documented_invocation_actually_prints_something(tmp_path):
 
     clean = tmp_path / "clean.py"
     clean.write_text("x = 1\n", encoding="utf-8")
+    # ★ 故意把 UTF-8 模式去掉再起子进程：本脚本要打印 ℹ️/⚠️/✅，而 Windows 默认
+    #   代码页（GBK / cp1252）里没有这些字符 —— 2026-09-21 就是这样让 CI 的
+    #   windows job 变红的（UnicodeEncodeError → 退出码 2）。
+    #   如果这里让 PYTHONUTF8 顺着环境漏进来，「打印不出来就崩」这条路径
+    #   在有该变量的机器上就**再也测不到** —— 护栏会变成摆设。
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    # ★ 解码必须显式写 utf-8，不能用 `text=True` —— 那会按**父进程的 locale** 解
+    #   （简体中文 Windows 上是 GBK，CI 的 windows-latest 上是 cp1252）。
+    #   而本脚本现在**固定输出 UTF-8**（见 tools/sanitize_check.py 顶部的说明）。
+    #   实测（2026-09-21）：用 text=True 时父进程抛
+    #     UnicodeDecodeError: 'gbk' codec can't decode byte 0x89
+    #   然后 stdout 变成 None，测试以 AttributeError 结束 ——
+    #   **报错信息指向测试自己，完全看不出病根在编码。**
     proc = subprocess.run(
         [py, "tools/sanitize_check.py", "--path", str(clean)],
-        capture_output=True, text=True, cwd=str(REPO_ROOT))
+        capture_output=True, encoding="utf-8", errors="replace",
+        cwd=str(REPO_ROOT), env=env)
 
     assert proc.returncode == 0, (
-        f"退出码 {proc.returncode} —— 49 就是 shebang 坑复发了。\n"
+        f"退出码 {proc.returncode} —— 49 就是 shebang 坑复发了；"
+        f"2 则是「扫描器自己出错了」（结果无效，不是通过）。\n"
         f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
     assert proc.stdout.strip(), (
         "零输出 = 和「通过」无法区分。检查器不许有安静的失效路径。")
