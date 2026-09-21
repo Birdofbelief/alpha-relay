@@ -311,7 +311,7 @@ def test_first_char_decides_the_exchange():
 def test_heartbeat_time_is_parsable_by_the_monitors_exact_format():
     """`heartbeat.last_time` 必须能被监控端的格式串**原样解析**。
 
-    监控端用的是这一行（线上 线上监控端）：
+    监控端用的是这一行（线上唯一那处硬解析）：
 
         datetime.strptime(last_time, '%Y-%m-%d %H:%M:%S')
 
@@ -399,7 +399,7 @@ def test_unrecognizable_positions_raise_instead_of_looking_empty():
         抛异常     → 「持仓未知」 → 禁买（降级）
 
     两者在代码上只差一行，在风控上方向相反。线上对这种情况的处理就是
-    判对账失败（线上实测），本仓库初版这里返回空快照 —— 方向反了。
+    判对账失败，本仓库初版这里返回空快照 —— 方向反了。
     """
     for junk in (None, "字符串", 42, {"a": 1, "b": 2}):
         with pytest.raises(WireFormatError):
@@ -427,8 +427,8 @@ def test_legitimately_empty_positions_still_decode_to_empty():
 def test_heartbeat_wire_time_matches_the_producers_strftime_not_str():
     """线格式上，心跳时间用的是产生端的 `strftime`，不是 `str(datetime)`。
 
-    线上产生端在这一处写的是 `current_dt.strftime("%Y-%m-%d %H:%M:%S")`
-    （线上实测），而信号那边写的是 `str(current_dt)`（线上实测）——
+    线上产生端在这一处写的是 `current_dt.strftime("%Y-%m-%d %H:%M:%S")`，
+    而信号那边写的是 `str(current_dt)` ——
     **同一个文件里两个格式化方式**。本仓库把它们分开成 `fmt_dt_secs`
     与 `fmt_dt` 两个函数，正是为了照抄这个差异，而不是「统一一下」。
     """

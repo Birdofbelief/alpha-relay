@@ -110,7 +110,7 @@ def fmt_dt(dt: datetime) -> str:
 
     不要改成 `isoformat()`：后者用 `T` 分隔，与既有执行端的解析和历史信号
     不兼容。这三个字段的消费方式只有两种：取前 10 个字符比日期（`[:10]`）、
-    以及按字典序排序（`线上实测`）—— 两者对「有没有微秒」都不敏感，
+    以及按字典序排序 —— 两者对「有没有微秒」都不敏感，
     所以这里与线上保持一致即可，多一个保证是：`str()` 的输出**恒为定宽前缀**，
     字典序必然等于时间序。
     """
@@ -124,8 +124,8 @@ def fmt_dt_secs(dt: datetime) -> str:
 
         线上监控端   datetime.strptime(last_time, '%Y-%m-%d %H:%M:%S')
 
-    线上产生端在心跳里写的是 `current_dt.strftime("%Y-%m-%d %H:%M:%S")`
-    （线上实测），**显式截断到秒**。若这里改用 `str(dt)`，只要时钟带微秒，
+    线上产生端在心跳里写的是 `current_dt.strftime("%Y-%m-%d %H:%M:%S")`，
+    **显式截断到秒**。若这里改用 `str(dt)`，只要时钟带微秒，
     输出就变成 `2026-09-20 09:50:56.878982`，而 `strptime` 会抛
     `ValueError: unconverted data remains: .878982`。
 
@@ -219,23 +219,23 @@ class Execution:
 
     ## ★ 线上有**两种记录形状**，字段集互斥 —— 别把它们拼成一份
 
-    实测（生产源码两处构造点）：
+    实测（线上两处构造点）：
 
-      **非终态**（`submitted`/`skipped`/`failed`）—— 线上实测 的 `_record()`
+      **非终态**（`submitted`/`skipped`/`failed`）—— 由 `_record()` 统一构造
           `signal_id, code, action, status, reason, time`
           **没有** `order_id` / `price` / `amount`
 
-      **终态**（`filled`/`canceled`）—— 线上实测 / 565-574 / 703-712 直接构造
+      **终态**（`filled`/`canceled`）—— 线上三处**直接构造**
           `signal_id, code, action, status, order_id, price, amount, time`
           **没有** `reason`
 
     所以 `reason` 与 `order_id`/`price`/`amount` **是互斥的**，各自只属于一种形状。
 
-    ⚠️ **不要照线上执行端 回执写入函数 的 docstring 写解析代码。**
-    那份 docstring（线上实测）把两种形状拼成了一份「完整」字段表，而且**列了一个
+    ⚠️ **不要照线上执行端那个写回执函数的 docstring 写解析代码。**
+    那份 docstring 把两种形状拼成了一份「完整」字段表，而且**列了一个
     全代码库都不存在的 `limit_price`**（全文件检索：只出现在那一行注释里）。
     本仓库初版正是照它建的模型 —— 于是凭空多出一个字段、又漏掉了真正的 `price`，
-    后果是产生端的成交播报读 `rec.get('price')`（线上实测）时恒为 `None`。
+    后果是产生端的成交播报读 `rec.get('price')` 时恒为 `None`。
     **文档比代码更容易被信任，这一条是活例子。**
 
     读的时候要宽容（两种形状都能解），写的时候要严格（按 status 决定形状）。
@@ -357,14 +357,13 @@ class PositionSnapshot:
         形态 C 的存在本身就说明**线上确实曾经是另一种格式**，所以兼容不是
         「防御性编程」，是在处理真实的历史包袱。
 
-        ★ **认不出时抛异常，绝不返回空快照。** 线上对这种情况的处理是
-        `判对账失败`（线上实测）
-        —— 判对账失败，也就是**禁买**。本仓库初版这里 `return cls()`，
-        把「读不懂」变成了「确认空仓」，正好是失效方向反了：
+        ★ **认不出时抛异常，绝不返回空快照。** 线上对这种情况的处理是标记
+        **持仓未同步** —— 判对账失败，也就是**禁买**。本仓库初版这里
+        `return cls()`，把「读不懂」变成了「确认空仓」，正好是失效方向反了：
         该降级的时候反而放行买入，而双持仓是这套系统里最贵的错误。
 
-        注意形态 A 里 `positions` 字段存在但不是 dict 时，**同样是失败**
-        （线上实测），不能当成空仓。
+        注意形态 A 里 `positions` 字段存在但不是 dict 时，**同样是失败**，
+        不能当成空仓。
         """
         if isinstance(d, list):
             # 形态 C：`[{code, amount, …}]` → `{code: {...}}`。取不到 code 就跳过该条。
@@ -413,8 +412,8 @@ class PositionSnapshot:
         """`update_time` 解析。**只在形态 A 下有意义** —— 形态 B/C 下它是空的。
 
         这不是缺陷而是兼容层的真实代价：线上用 `positions_data.get('update_time','')`，
-        形态 B/C 下恒为空串，于是由它回填的 `buy_date` 会退化成「今天」
-        （线上实测）。契约里必须写明，否则「为什么持仓买入日期全是今天」
+        形态 B/C 下恒为空串，于是由它回填的 `buy_date` 会退化成「今天」。
+        契约里必须写明，否则「为什么持仓买入日期全是今天」
         会变成一个查不出来的问题。
         """
         if not raw:
@@ -428,7 +427,7 @@ class PositionSnapshot:
 
     @property
     def bare_codes(self) -> list[str]:
-        """6 位裸代码 —— 对账用的规范形式（线上也是归一到这个再比，线上实测）。"""
+        """6 位裸代码 —— 对账用的规范形式（线上对账前也是先归一到这个再比）。"""
         return [to_bare(c) for c in self.positions]
 
     def held_codes(self) -> list[str]:

@@ -3,12 +3,12 @@
 
 ## 命名说明
 
-项目目录叫「akshare」，但实际取数**不走 akshare** —— 历史日线走腾讯财经
-（`web.ifzq.gtimg.cn`），实时快照走新浪（`hq.sinajs.cn`）。
+本模块取名 `online` 而不是 `akshare_*`，是因为**取数其实不走 akshare** ——
+历史日线走腾讯财经（`web.ifzq.gtimg.cn`），实时快照走新浪（`hq.sinajs.cn`）。
 akshare 只在交易日历那一处用到（见 `calendar.py` 的默认 loader）。
 
 这个事实对使用者是好消息：**本仓库的核心路径只需要 `requests` + `pandas`**，
-akshare 是可选依赖。所以本模块叫 `online` 而不是 `akshare_*`。
+akshare 是可选依赖。
 
 ## 三个反直觉的实测事实（都写进了代码）
 
