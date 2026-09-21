@@ -124,7 +124,7 @@ tests/                        含 golden 线格式、传输契约、端到端接
 **「谁写」写在代码里**（`transport/base.py` 的 `CHANNEL_OWNERS`），
 `SingleWriterGuard` 在运行期**抛异常**拒绝越权 —— 不是打警告。
 
-理由见 [`DESIGN_NOTES.md`](DESIGN_NOTES.md)：**凡是靠 read-modify-write 实现
+理由见 [`WIRE_CONTRACT.md`](WIRE_CONTRACT.md) 第一节：**凡是靠 read-modify-write 实现
 「往列表里追加」的存储都不原子**（内置的 `GistTransport` 是一个实例），
 两个写者同时改同一份文档，后写的**静默**覆盖先写的。
 所有权约束因此**不能绑在存储上**，只能绑在角色上 —— 换后端换不掉它。
