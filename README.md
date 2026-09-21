@@ -30,9 +30,10 @@
 > miniQMT and the like, or an adapter layer you write yourself). Strategies are loaded
 > from paths outside this repository, so
 > **your alpha never enters this repo, and never enters the broker's platform either.**
-> The chain runs end to end with **zero credentials, zero network and zero broker**:
-> `py -m signalchain.demo`. Design notes and reference docs are written in Chinese;
-> this README is the entry point.
+> The chain runs end to end with **zero credentials, zero network and zero broker**
+> — install the two runtime deps first (`py -m pip install requests pandas`),
+> then `py -m signalchain.demo`. Design notes and reference docs are written in
+> Chinese; this README is the entry point.
 
 ---
 
@@ -63,7 +64,7 @@
 而在拆的过程中，真正被沉淀下来的其实不是代码，是几个**用实盘亏损换来的判断**：
 
 - 数据出错时该停哪一半 → 按「哪边错了更疼」定，**不按「哪边更保守」**；
-- 两个写者同时改同一个 Gist 会怎样 → 后写的**静默**覆盖先写的；
+- 两个写者同时改同一份文档会怎样 → 后写的**静默**覆盖先写的；
 - 重试会不会变成重复下单 → 幂等键必须能从回放里复现。
 
 > 如果「保守」就能得出正确答案，那就不需要判断了。
@@ -148,14 +149,16 @@
 ### 3. 单一写入者不是风格偏好，是当前唯一能消除竞态的手段
 
 **凡是靠「读出来 → 改一改 → 写回去」实现「往列表里追加」的存储，都不原子。**
-这不是 Gist 特有的病，而是这一整类后端的通病：两个写者同时改同一份文档，
+链路的追加就是这么做的（`store.py` 的 `append`：读出来、追加一条、整份写回去），
+所以这不是某一个后端的毛病，而是**这一整类后端的通病**：两个写者同时改同一份文档，
 **后写的会静默覆盖先写的** —— 而「静默」才是关键：两边都以为自己写成功了，
 日志里也都写着成功。
 
-内置的 `GistTransport` 正好是这样一个后端（它每次投递都是一次完整的
-read-modify-write），所以拿它当例子。但你换成对象存储、网络盘、自建 HTTP 服务时，
-**只要那句「读改回写」还在，这个病就还在**。后端自己提供原子追加或 CAS 是唯一的
-例外 —— `Transport.supports_cas` 就是用来标这一点的标志位（内置的三个后端都还没有）。
+后端自己提供原子追加或 CAS 是唯一的例外 —— `Transport.supports_cas`
+就是用来标这一点的标志位。**内置的三个后端现在都是 `False`**，
+所以你换成对象存储、网络盘、自建 HTTP 服务时也一样：
+**只要那句「读改回写」还在，这个病就还在。**
+这条硬约束的来由见 [`docs/WIRE_CONTRACT.md`](docs/WIRE_CONTRACT.md)。
 
 所以 channel 的**所有权写在代码里**（`transport/base.py` 的 `CHANNEL_OWNERS`）：
 
@@ -176,11 +179,12 @@ executions ← 只有执行端能写
 ### 先看它跑
 
 ```bash
+py -m pip install requests pandas   # 运行时依赖只有这两个，装一次
 py -m signalchain.demo
 ```
 
-零凭据、零网络、零券商。跑完会打印四个 channel 的**真实落盘字节**，
-包括执行端回写的持仓与成交回执。
+零凭据、零网络、零券商 —— 有依赖，但没有需要你填的东西。
+跑完会打印四个 channel 的**真实落盘字节**，包括执行端回写的持仓与成交回执。
 
 > **Windows 用户：也可以直接双击 `demo.cmd`。**
 >
@@ -399,7 +403,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 
 | 场景 | 用什么 |
 |---|---|
-| **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零依赖 —— `py -m signalchain.demo` 走的就是这条 |
+| **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零外部服务（只需 `requests` + `pandas` 两个包）—— `py -m signalchain.demo` 走的就是这条 |
 | **跨机器，你已有对象存储** | 自己写一个 `Transport`：三个方法，几十行。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
 | **跨机器，想先用现成的** | 内置的 `GistTransport` 是一个**参考实现**：它演示了「怎么把一个只会整份读写的 HTTP 服务包成 `Transport`」。能用，但它不是唯一的、也不是默认推荐的那个 |
 
@@ -546,7 +550,8 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 - Python ≥ 3.10
 - 运行时依赖只有 `requests` + `pandas`
 - `akshare` 是**可选**依赖（只有 `TradingCalendar.refresh()` 需要；不装可用静态日历）
-- 使用方式是「clone 下来直接跑」，**不需要 `pip install`**（见 [`pyproject.toml`](pyproject.toml)）
+- 使用方式是「clone 下来直接跑」：**不用把 signal-chain 装成依赖，但两个运行时依赖得自己装**——
+  `py -m pip install requests pandas`（见 [`pyproject.toml`](pyproject.toml)）
 
 ## License
 

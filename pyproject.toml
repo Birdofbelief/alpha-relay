@@ -1,7 +1,10 @@
 # signal-chain
 #
-# 打包配置刻意保持最小：这个项目的使用方式是「clone 下来直接跑」，
-# 而不是「pip install 成一个依赖」。所以没有 entry_points、没有 console_scripts。
+# 打包配置刻意保持最小：这个项目的使用方式是「clone 下来直接跑」——
+# 不再把 signal-chain 本身 pip install 成一个依赖，但它的**运行时依赖
+# （requests + pandas）仍然要你自己装**：
+#     py -m pip install requests pandas
+# 所以没有 entry_points、没有 console_scripts。
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
