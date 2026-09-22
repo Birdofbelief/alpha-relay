@@ -38,7 +38,6 @@ from __future__ import annotations
 import ast
 import io
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -197,7 +196,12 @@ def _run_in_a_console(args: list[str], encoding: str, timeout: int = 300):
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
     env["PYTHONIOENCODING"] = encoding
-    launcher = shutil.which("py") or sys.executable
+    # ★ 启动器＝**跑测试的这个解释器**，不挑。理由与 test_end_to_end.py 里那条同源：
+    #   启动器不是被测对象，而 `sys.executable` 是唯一被证明装好了依赖的那个。
+    #   曾经这里写 `shutil.which("py") or sys.executable` —— 2026-09-22 CI 的
+    #   windows runner 上 `py` 存在却指向另一套没装 requests/pandas 的 Python，
+    #   于是整批测试红在「缺少运行时依赖：pandas」上：那是**机器属性**，不是代码。
+    launcher = sys.executable
     return subprocess.run([launcher, *args], capture_output=True,
                           encoding="utf-8", errors="replace",
                           cwd=str(REPO_ROOT), env=env, timeout=timeout)
@@ -275,7 +279,7 @@ def test_redirected_output_is_utf8_not_the_console_codepage(encoding):
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
     env["PYTHONIOENCODING"] = encoding
-    proc = subprocess.run([shutil.which("py") or sys.executable,
+    proc = subprocess.run([sys.executable,
                            "-m", "signalchain.demo", "--quiet"],
                           capture_output=True, cwd=str(REPO_ROOT), env=env, timeout=300)
     assert proc.returncode == 0, proc.stderr[-2000:]

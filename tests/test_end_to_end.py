@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -291,16 +290,25 @@ def test_documented_command_survives_a_non_utf8_console(tmp_path):
         → UnicodeEncodeError: 'gbk' codec can't encode character '⇒' → 退出码 1
     详见 signalchain/demo.py 里 main() 顶部那段。
     """
-    # 用哪个启动器**不是这条测试要测的东西** —— 被测的是「那个模块 + 非 UTF-8 控制台」。
-    # 所以取一个真能用的就行：优先 `py`，拿不到再退回当前解释器
-    # （免得在没有 py 的机器上整条跳过，让护栏变成摆设）。
+    # ★ 启动器就用**跑测试的这个解释器**，不挑。
+    #
+    #   被测的是「那个模块 + 非 UTF-8 控制台」，启动器从来不是被测对象；
+    #   而 `sys.executable` 是唯一**被证明装好了依赖**的解释器 —— 它就是正在跑
+    #   pytest 的这个（依赖不齐的话本文件顶部的 import 早就红了）。
+    #
+    #   这里原来写的是 `shutil.which("py") or sys.executable`，理由是「别让没有
+    #   py 的机器整条跳过」。2026-09-22 CI 第一次真跑就现形：windows runner 上
+    #   `py` **存在**、却指向另一个没装 requests/pandas 的 Python ⇒ 一批测试全红，
+    #   报的是「缺少运行时依赖：pandas」—— 一条与代码无关的**机器属性**被拉进了
+    #   断言。挑启动器＝把「这台机器上 py 指向谁」放进测试，而它每台机器都不同
+    #   （CI 上 setup-python 装包的是 `python`，`py` 是 runner 自带的另一套）。
     #
     # ★ 这里刻意**不**用 `python`：在 Windows 上 `python` 经常是微软商店的占位程序 ——
     #   本机实测 `shutil.which("python")` 指到 `…\WindowsApps\python.EXE`，
     #   执行它是**退出码 49 + 零输出**（静默失败），换上去这条会假红。
     #   文档正文写 `python -m` 是因为它在 macOS / Linux 上才是通用写法，
     #   README 的「快速上手」里另有一段说明 Windows 上该用 `py`。
-    launcher = shutil.which("py") or sys.executable
+    launcher = sys.executable
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
     proc = subprocess.run(

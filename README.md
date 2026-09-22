@@ -208,8 +208,22 @@ python -m signalchain.demo
 > `python` 换成 `py`。**
 >
 > 上面写 `python -m`，是因为那是 macOS / Linux 上通用的写法；`py` 是 Windows
-> 自带的启动器（装 python.org 的安装包时一起装上的）。两者只差**命令怎么写**，
-> 跑出来的东西是一样的 —— 本文档里所有 `python -m …` 都同理。
+> 自带的启动器（装 python.org 的安装包时一起装上的）。
+>
+> ⚠️ **装包和运行要用同一个启动器。** `python` 与 `py` 在你机器上可能是
+> **两个不同的 Python** —— 装进其中一个的包，另一个看不见。症状长这样
+> （这句话本身就在告诉你该敲什么）：
+>
+> ```
+> ImportError: signal-chain 缺少运行时依赖：pandas
+>     python -m pip install requests pandas
+> ```
+>
+> 2026-09-22 在 GitHub 的 windows 机器上实测到这个组合：`python` 那边依赖装好了，
+> `py` 却仍指向另一套没有 pandas 的解释器。`py -0` 能列出你机器上所有已注册的
+> 解释器；要给 `py` 那份装，就敲 `py -m pip install requests pandas`。
+> **双击 `demo.cmd` 不会踩这个坑**：它挑定一个启动器后一路用它，失败提示里的
+> 安装命令也是按那个启动器写的，照抄即可。
 >
 > 敲 `python` 若把你送进了微软商店：那个是 Windows 的**占位程序**，不是 Python
 > 本身，说明 `PATH` 里没有真的 Python（重装时勾上 *Add python.exe to PATH*）。

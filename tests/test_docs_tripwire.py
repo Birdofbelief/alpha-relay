@@ -517,16 +517,32 @@ class _Blocker:
 sys.meta_path.insert(0, _Blocker())
 import signalchain
 
-print("居然 import 成功了：", signalchain.__file__)
+print("import ok:", ascii(signalchain.__file__))
 """
 
 
 def _run_import_probe(blocked):
-    """在子进程里 `import signalchain`，并假装 `blocked` 这个包不存在。
+    r"""在子进程里 `import signalchain`，并假装 `blocked` 这个包不存在。
 
-    ★ 探针正文只用 **ASCII** —— 命令行参数里的非 ASCII 会过一层系统代码页
-    转换（见 docs 里「参数编码」那条），这里要测的是导入期行为，
-    不该让那个变量混进来。
+    ★ 探针正文只用 **ASCII** —— 两条独立的理由：
+      ① 命令行参数里的非 ASCII 会过一层系统代码页转换（见 docs 里「参数编码」那条）；
+      ② **探针自己的 stdout 也会过那一层**。成功那行的 print 原来是中文，
+         cp1252 控制台下直接 `UnicodeEncodeError` ⇒ 退出码 1 ⇒ 下面那条对照测试
+         报「依赖都在，import 却失败了」。**实际 import 是成功的，是它自己那句
+         庆祝的话打不出来** —— 2026-09-22 CI 的 windows-latest 实测。
+         假红，而且失败信息把人指向完全错误的方向（去查看门狗的条件）。
+         ★ 同一个坑还有**第二个入口**，而且更阴：那句 print 后面跟着
+         `signalchain.__file__` —— **路径里带非 ASCII 的机器**（用户名是中文的
+         Windows 就是这么个情况）在 cp1252 下照样编不出来，只把字面量改成 ASCII
+         并不够。所以这里用 `ascii(...)` 把它转成 `\uXXXX` 转义再打：
+         路径仍然看得见（诊断信息一字不少），但输出**保证是纯 ASCII**。
+      ★ 本机为什么测不出来 —— **两条独立原因，别只记住第一条**：
+        ① 开发机设了 `PYTHONUTF8=1`（下面那个 env 已经摘掉）；
+        ② 更根本的一条：**本机代码页是 GBK，而 GBK 编得出中文**。
+           那句中文 print 在 GBK 下一点毛病没有，只有 cp1252 才编不出来。
+           ⇒ 光摘环境变量**并不能**让本机复现（实测：把 print 换回中文，
+             本机照样绿）；要在本机看到它红，得显式把编码按成 cp1252。
+           CI 的 windows-latest 是 cp1252 —— 所以它一跑就现形。
 
     ★★ `BLOCKED` 必须是**元组/集合**（按名字精确比对），不能是字符串。
        这行最初写的是 `BLOCKED = {blocked!r}`（用 `.format()` 塞进去），
@@ -537,7 +553,15 @@ def _run_import_probe(blocked):
        现在用 `.replace()` 而不是 `.format()` 塞值：模板里就没有花括号了，
        也就没有「转义 `{{}}`」那一层次要陷阱。
     """
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    # ★ 和 test_output_safety.py 里那几处同一条纪律：**显式摘掉** PYTHONUTF8 /
+    #   PYTHONIOENCODING，让子进程走**这台机器自己的**控制台编码，而不是开发机
+    #   设的那个覆盖值 —— 否则这条探针量的是「我的机器」，不是「别人的机器」。
+    #   ⚠️ 但摘掉**不等于本机就能复现** cp1252 那个病：本机代码页是 GBK，
+    #   中文照样编得出来（实测：把 print 换回中文，摘掉之后本机仍然绿）。
+    #   这条护栏的本机可红性到此为止，剩下那半只有 cp1252 的机器能验 ——
+    #   也就是 CI 的 windows runner（2026-09-22：本机 295 全绿，它红 14 条）。
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "PYTHONUTF8", "PYTHONIOENCODING")}
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = _BLOCKED_IMPORT_PROBE.replace("__BLOCKED__", repr(blocked))
     return subprocess.run(
