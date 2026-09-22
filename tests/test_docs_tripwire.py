@@ -41,16 +41,56 @@ from signalchain import ACTION_BUY, Strategy
 
 
 def _import_lines(text: str) -> list[str]:
-    """从任意文本里挑出 `from X import ...` 行（去掉缩进）。
+    """从任意文本里挑出 `from X import ...` 语句（去掉缩进，多行括号拼成一行）。
 
     只认 `from ... import ...`：`import x` 不带名字，没有「名字写错」的余地。
+
+    ★ 括号续行必须拼回来，并把括号本身去掉。文档里合法地写着
+
+        from signalchain.models import (
+            EXEC_CANCELED, Execution,
+        )
+
+    只看第一行会得到 `from ... import (`，把 `(` 当成一个要 import 的名字，
+    于是**报一个假的红** —— 而示例代码因为行宽限制换行，不是文档的错。
+    （2026-09-22 实测：直接放宽检查面时，`docs/EXECUTOR_GUIDE.md` 这一行
+    就是这么被误报的。是先量后断言救回来的。）
     """
     out = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("from ") and " import " in line:
-            out.append(line)
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not (line.startswith("from ") and " import " in line):
+            continue
+        # 把括号续行拼到配平为止
+        while line.count("(") > line.count(")") and i < len(lines):
+            line += " " + lines[i].strip()
+            i += 1
+        line = " ".join(line.replace("(", " ").replace(")", " ").split())
+        out.append(line)
     return out
+
+
+def _resolve_import_lines(text: str, where: str) -> list[str]:
+    """`text` 里解析不了的 `from X import a, b`，每行一条说明；全好则空列表。
+
+    ★ 收集**全部**失败再一次性报出来，不在第一条停下 —— 一次修完，
+    比「跑一次、修一行、再跑一次」少几个来回。
+    """
+    failures: list[str] = []
+    for line in _import_lines(text):
+        module, symbols = _named_modules_and_symbols(line)
+        try:
+            mod = __import__(module, fromlist=symbols)
+        except ImportError as exc:
+            failures.append(f"{where}: `{line}` —— 模块 `{module}` 导不进来：{exc}")
+            continue
+        missing = [n for n in symbols if not hasattr(mod, n)]
+        if missing:
+            failures.append(f"{where}: `{line}` —— `{module}` 里没有 `{missing}`")
+    return failures
 
 
 def _named_modules_and_symbols(line: str) -> tuple[str, list[str]]:
@@ -70,19 +110,13 @@ def test_package_docstring_import_lines_all_resolve():
 
     ★ 这条是那个「三个名字全是坏的」缺陷的回归测试。
     """
-    lines = _import_lines(signalchain.__doc__ or "")
-    assert lines, "包 docstring 里一行 import 示例都没有 —— 这条测试就白跑了"
+    text = signalchain.__doc__ or ""
+    assert _import_lines(text), "包 docstring 里一行 import 示例都没有 —— 这条测试就白跑了"
 
-    for line in lines:
-        module, symbols = _named_modules_and_symbols(line)
-        try:
-            mod = __import__(module, fromlist=symbols)
-        except ImportError as exc:
-            pytest.fail(f"文档里写 `{line}`，但模块 `{module}` 导不进来：{exc}")
-        for name in symbols:
-            assert hasattr(mod, name), (
-                f"文档里写 `{line}`，但 `{module}` 里没有 `{name}` —— "
-                f"读者会照着敲，然后得到 ImportError")
+    failures = _resolve_import_lines(text, "signalchain/__init__.py 的 docstring")
+    assert not failures, (
+        "包 docstring 里的 import 行，读者抄下来会失败：\n" +
+        "\n".join(f"  {f}" for f in failures))
 
 
 def test_public_all_matches_reality():
@@ -281,6 +315,46 @@ def _documented_components() -> dict[str, list[str]]:
         for name in set(_COMPONENT_RE.findall(path.read_text(encoding="utf-8"))):
             found.setdefault(name, []).append(rel)
     return found
+
+
+def test_every_doc_import_line_resolves():
+    """★ 8 个文档文件里**每一行** `from X import a, b` 都要能解析。
+
+    ★ 为什么值得单独一条：本文件开头的 docstring 从一开始就写着
+    「**逐个 import** 文档里 `from X import a, b` 形式的每一行」，而实现
+    只把 `signalchain.__doc__` 喂了进去 —— 真正的示例代码住在
+    `_DOC_FILES` 那 8 个文件里，一行都没被检查过。
+
+    这个缺口有实际代价：README 的「换成你自己的执行端」一节写着
+
+        from signalchain import Config, build_chain
+
+    而 `Config` 当时**没有**从包根导出（它住在 `signalchain.config`）。
+    读者照着敲必得 `ImportError`，第一反应不是「文档过时」而是「这框架是坏的」。
+    （同一个坑 `Strategy` 先踩过一次，见 `__all__` 里那条注释。）
+
+    ★ 范围按 `_DOC_FILES` **枚举**，不按「我记得读过哪几处」——
+    后者会随记忆漏，而枚举不会。
+    """
+    root = _repo_root()
+    failures: list[str] = []
+    checked = 0
+    for rel in _DOC_FILES:
+        path = root / rel
+        assert path.exists(), (
+            f"`{rel}` 不存在 —— 它在 `_DOC_FILES` 里，说明它该被检查。"
+            f"真的删了它，就把它从这个列表里一起删掉。")
+        text = path.read_text(encoding="utf-8")
+        checked += len(_import_lines(text))
+        failures += _resolve_import_lines(text, rel)
+
+    assert checked, (
+        f"`_DOC_FILES` 那 {len(_DOC_FILES)} 个文件里一行 import 都没扫到 —— "
+        f"正则或文档列表坏了，这条测试白跑")
+    assert not failures, (
+        "文档里这些 import 行，读者抄下来会失败：\n" +
+        "\n".join(f"  {f}" for f in failures) +
+        "\n要么把名字导出到包根，要么改文档。**不要让读者抄到一行必炸的代码。**")
 
 
 def test_every_component_named_in_the_docs_actually_exists():

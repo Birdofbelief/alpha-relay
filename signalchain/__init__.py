@@ -67,6 +67,7 @@ __version__ = "0.1.0"
 
 from .calendar import TradingCalendar, make_static_calendar, weekday_calendar
 from .chain import Chain, build_chain, build_file_chain
+from .config import Config
 from .console import emit, force_utf8, setup_logging
 from .executor import Executor
 from .gates import (
@@ -119,8 +120,11 @@ __all__ = [
     # 模型
     "Signal", "Execution", "PositionSnapshot", "Heartbeat",
     "to_jq", "to_bare", "ACTION_BUY", "ACTION_SELL",
-    # 装配
-    "Chain", "build_chain", "build_file_chain",
+    # 装配 —— `Config` 与 `Strategy` 是同一回事：README 里写着
+    # `from signalchain import Config`，而读者照着敲会得到 ImportError。
+    # 换投递后端（`SC_TRANSPORT` 指到仓库外的 .py）那条路必须先造一个 Config，
+    # 所以它和策略一样属于**扩展点**，必须能从包根拿到。
+    "Config", "Chain", "build_chain", "build_file_chain",
     # 执行端契约 —— 接自己的券商执行端时要 `from signalchain import Executor`
     "Executor",
     # 策略侧 —— 这是框架的**主要扩展点**，必须能从包根拿到。

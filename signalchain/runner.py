@@ -79,6 +79,10 @@ DEFAULT_TASK_FAIL_LIMIT = 3
 #: 主循环心跳间隔
 LOOP_INTERVAL_SECONDS = 30
 
+#: 「日历根本不可用」这条告警的最小间隔（秒）。
+#: 它是一个**持续故障**，会一直成立；但不该每 30 秒刷一行把日志淹掉。
+CALENDAR_DEAD_ALERT_SECONDS = 3600
+
 #: 启动时刷新历史的最低时间预算：低于它就跳过刷新，优先保证定时任务不被拖过窗口
 STARTUP_MIN_BUDGET_SECONDS = 60
 
@@ -192,6 +196,9 @@ class Runner:
 
         self._fail_count: dict[str, int] = {}
         self._tasks: dict[str, Callable[[datetime], Any]] = {}
+        # 「跳过本轮」的日志节流，见 `_log_skip`
+        self._last_skip_alert: datetime | None = None
+        self._last_skip_day: str = ""
 
     # ============================================================
     # 任务注册
@@ -542,22 +549,59 @@ class Runner:
             self.calendar.refresh()
         self.state.save()
 
+    def _log_skip(self, now: datetime) -> None:
+        """记一次「这一轮什么都没跑」—— 并**区分两种成因**。
+
+        ★ 旧写法是 `sleep + continue`，一行日志都不留，于是下面两件事
+        产出**完全相同的现象**：
+
+            「今天休市」        → 正常。明天照常。
+            「日历根本不可用」  → 故障。**从今往后的每一天都会被跳过。**
+
+        而它们的处置完全相反。日历不可用时进程会一直活着、心跳照旧、
+        唯独永远不产出信号 —— 人去怀疑策略、怀疑投递、怀疑券商，
+        **不会去怀疑日历**。所以这里必须把话说明白，而不是安静地睡过去。
+
+        节流：正常休市一天只记一行；日历不可用按
+        `CALENDAR_DEAD_ALERT_SECONDS` 重复告警（它是持续故障，会一直成立）。
+        """
+        day = now.strftime("%Y-%m-%d")
+        if not self.calendar.usable:
+            last = self._last_skip_alert
+            if last is None or (now - last).total_seconds() >= CALENDAR_DEAD_ALERT_SECONDS:
+                log.error(
+                    "× 日历不可用（%s）—— **所有任务都会被跳过**，进程会一直活着"
+                    "但永远不产出信号。装 akshare（`pip install akshare`），"
+                    "或显式传入一个 calendar= 给 build_chain()。",
+                    self.calendar.describe())
+                self._last_skip_alert = now
+            return
+        if day != self._last_skip_day:
+            self._last_skip_day = day
+            log.info("◇ %s 非交易日（%s），今天不跑任务",
+                     day, self.calendar.describe())
+
     def run_forever(self, max_loops: int | None = None) -> None:
-        """主循环。`max_loops` 仅供测试 —— 生产上它是 None（永不退出）。"""
+        """主循环。`max_loops` 仅供测试 —— 生产上它是 None（永不退出）。
+
+        ★ 循环体里**没有 `continue`**，是刻意的：计数与 `max_loops` 判断只能有
+        一个落点。此前非交易日那条 `continue` 越过了它们，于是
+        `run_forever(max_loops=N)` 在日历时**永远不返回**（实测 45 秒不返回，
+        被 timeout 杀掉）—— 挂住不报错，比抛异常更难查。
+        """
         loops = 0
         while True:
             try:
                 now = self.clock()
                 self.roll_day(now)
 
-                if not self.calendar.is_trading_day(now):
-                    time.sleep(LOOP_INTERVAL_SECONDS)
-                    continue
+                if self.calendar.is_trading_day(now):
+                    for r in self.run_due(now):
+                        log.info("◆ %s", r.summary())
 
-                for r in self.run_due(now):
-                    log.info("◆ %s", r.summary())
-
-                self.notify_filled()
+                    self.notify_filled()
+                else:
+                    self._log_skip(now)
             except Exception as e:  # noqa: BLE001
                 # 【最外层兜底】任何意外都不得杀进程。带着错误活着 > 干脆死去，
                 # 因为前者还有心跳、还能被人看见。见模块文档第 5 条。

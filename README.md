@@ -553,7 +553,9 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 
 - Python ≥ 3.10
 - 运行时依赖只有 `requests` + `pandas`
-- `akshare` 是**可选**依赖（只有 `TradingCalendar.refresh()` 需要；不装可用静态日历）
+- `akshare` 用来取**交易日历**。零依赖 demo（`build_file_chain`）自带离线日历，不需要它；
+  但**默认的实盘装配 `build_chain()` 需要它**——不装的话日历不可用，程序会把**每一天**
+  都判成非交易日：进程活着、心跳照旧，**一个任务都不跑**。装：`py -m pip install akshare`
 - 使用方式是「clone 下来直接跑」：**不用把 signal-chain 装成依赖，但两个运行时依赖得自己装**——
   `py -m pip install requests pandas`（见 [`pyproject.toml`](pyproject.toml)）
 

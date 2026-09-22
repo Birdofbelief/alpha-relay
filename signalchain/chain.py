@@ -162,12 +162,22 @@ def build_chain(
     elif isinstance(strategy, str):
         strategy = load_strategy(strategy)
 
-    # 日历：显式传入 > 交易日历（在线失败退静态兜底，见 calendar.py）
+    # 日历：显式传入 > 在线交易日历。
+    # ★ 加载失败**不退化成「按工作日判断」**，这是刻意的（见 calendar.py「教训一」）：
+    #   那样会在法定节假日产生信号，比「整天不动」更危险。
+    #   代价是失败后 `is_trading_day` 恒为 False ⇒ **一个任务都不会跑**，
+    #   于是这条日志必须把「后果」和「怎么修」都写出来 —— 否则它就是那种
+    #   「进程活着、心跳还在、唯独永远没有信号」的形状，人会去怀疑策略和券商。
     if calendar is None:
         calendar = TradingCalendar()
         if not calendar.load():
-            log.error("◇ 交易日历加载失败，本进程将**保守地判定所有日期为非交易日**。"
-                      "要么修好日历源，要么显式传入一个 calendar。")
+            log.error(
+                "◇ 交易日历加载失败，本进程将**把所有日期都判成非交易日** —— "
+                "也就是说从今天起一个任务都不会跑（进程会一直活着）。"
+                "最常见的原因是没装 akshare：`pip install akshare`。"
+                "也可以显式传入 calendar=（离线可用 weekday_calendar(start, end)，"
+                "但它会在法定节假日产生信号，只适合演示）。"
+                "失败原因见上一行日历自己的报错。")
 
     # 行情：显式传入 > 在线（重试 + 缓存）
     if market is None:

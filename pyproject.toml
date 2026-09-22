@@ -28,7 +28,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 只有 TradingCalendar.refresh() 需要它。不装也能跑 —— 用静态日历或内置周末日历。
+# ★ 别被「optional」骗了：**默认的实盘路径需要它**。
+#   `build_chain()` 造的是 `TradingCalendar()`，而它默认走 akshare。
+#   不装 akshare 时日历不可用 ⇒ **保守地把每一天都判成非交易日 ⇒ 一个任务都不跑**。
+#   刻意不降级成「按工作日判断」：那会在法定节假日产生信号，比整天不动更危险
+#   （见 signalchain/calendar.py 的「教训一」）。
+#   真正零依赖的是 demo 那条路：`build_file_chain()` 自带离线日历，不需要 akshare。
 calendar = ["akshare>=1.10"]
 dev = ["pytest>=7"]
 
