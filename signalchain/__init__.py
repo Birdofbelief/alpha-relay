@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""signal-chain —— 策略与信号链路解耦的可插拔框架。
+"""alpha-relay —— 策略与信号链路解耦的可插拔框架。
 
 ## 它在解决什么
 
@@ -100,7 +100,7 @@ except ModuleNotFoundError as _exc:
     if _missing not in ("pandas", "requests"):
         raise
     raise ImportError(
-        f"signal-chain 缺少运行时依赖：{_missing}\n"
+        f"alpha-relay 缺少运行时依赖：{_missing}\n"
         "\n"
         "装一次就行（运行时只需要这两个包）：\n"
         "\n"

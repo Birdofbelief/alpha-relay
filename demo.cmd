@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  signal-chain -- double-clickable demo launcher
+REM  alpha-relay -- double-clickable demo launcher
 REM
 REM  Why this file exists: double-clicking a .py on Windows opens a
 REM  console, runs it, and closes the window the instant the process
@@ -21,7 +21,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo   signal-chain  --  demo
+echo   alpha-relay  --  demo
 echo ============================================================
 echo.
 

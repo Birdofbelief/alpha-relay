@@ -1,4 +1,4 @@
-# signal-chain
+# alpha-relay
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)](https://www.python.org/)
@@ -49,7 +49,7 @@ Three commands to see it work (Python 3.10+):
 > The symptom looks like this (the message itself tells you what to type):
 >
 > ```
-> ImportError: signal-chain 缺少运行时依赖：pandas
+> ImportError: alpha-relay 缺少运行时依赖：pandas
 >     python -m pip install requests pandas
 > ```
 >
@@ -138,7 +138,7 @@ replaceable:
 ### Thirty-second overview
 
 ```
-        ┌──────────────── signal-chain ────────────────┐
+        ┌───────────────── alpha-relay ────────────────┐
 private │                                              │
 strategy│   Runner ──┬── Scheduler (task table / window) │
 ┌──────┐│            ├── TradingCalendar                │
@@ -680,7 +680,7 @@ entry points.
   without it the calendar is unavailable and the program treats **every day** as a non-trading day:
   the process stays alive, heartbeats continue, and **not a single task runs**.
   Install with `python -m pip install akshare`.
-- Usage is "clone and run": **you do not install signal-chain as a dependency, but you do install the
+- Usage is "clone and run": **you do not install alpha-relay as a dependency, but you do install the
   two runtime deps** — `python -m pip install requests pandas` (see [`pyproject.toml`](pyproject.toml)).
 - **All times are interpreted as local machine time, with Beijing time as the semantic reference**
   (A-share opens, closes and catch-up windows are all written in Beijing time). Scheduling uses **bare

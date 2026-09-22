@@ -1,4 +1,4 @@
-# signal-chain
+# alpha-relay
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)](https://www.python.org/)
@@ -42,7 +42,7 @@
 > Windows 上 `python` 若打不开、或把你送进微软商店，把命令里的 `python` 换成
 > `py`；也可以直接双击 `demo.cmd`。详见[快速上手](#快速上手)。
 
-> **English** — *signal-chain* decouples a trading strategy from the plumbing that
+> **English** — *alpha-relay* decouples a trading strategy from the plumbing that
 > delivers its signals safely. Your strategy runs on **your own machine** and implements
 > one pure function, `decide(ctx)`; the framework owns data-quality gates, risk gates,
 > delivery, retries, execution receipts, position reconciliation, scheduling, heartbeats
@@ -122,7 +122,7 @@
 ### 一分钟看懂
 
 ```
-        ┌──────────────── signal-chain ────────────────┐
+        ┌───────────────── alpha-relay ────────────────┐
 私有策略 │                                              │
 ┌──────┐│   Runner ──┬── Scheduler（任务表 / 补执行窗口）  │
 │      ││            ├── TradingCalendar                │
@@ -221,7 +221,7 @@ python -m signalchain.demo
 > （这句话本身就在告诉你该敲什么）：
 >
 > ```
-> ImportError: signal-chain 缺少运行时依赖：pandas
+> ImportError: alpha-relay 缺少运行时依赖：pandas
 >     python -m pip install requests pandas
 > ```
 >
@@ -676,7 +676,7 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 - `akshare` 用来取**交易日历**。零依赖 demo（`build_file_chain`）自带离线日历，不需要它；
   但**默认的实盘装配 `build_chain()` 需要它**——不装的话日历不可用，程序会把**每一天**
   都判成非交易日：进程活着、心跳照旧，**一个任务都不跑**。装：`python -m pip install akshare`
-- 使用方式是「clone 下来直接跑」：**不用把 signal-chain 装成依赖，但两个运行时依赖得自己装**——
+- 使用方式是「clone 下来直接跑」：**不用把 alpha-relay 装成依赖，但两个运行时依赖得自己装**——
   `python -m pip install requests pandas`（见 [`pyproject.toml`](pyproject.toml)）
 - **时间一律按「本机本地时间」解释，语义基准是北京时间**（A 股的开盘、收盘、
   补执行窗口都是按北京时间写的）。调度用的是**裸的本地时间、全程没有时区概念**：

@@ -211,7 +211,7 @@ def _num(key: str, default: float) -> float:
 
 
 DOTENV_EXAMPLE = """\
-# signal-chain 配置示例。复制成 .env 后按需修改。
+# alpha-relay 配置示例。复制成 .env 后按需修改。
 # ! .env 已被 .gitignore 挡住 —— 但**仍然不要把真实凭据写进任何会被提交的文件**。
 
 # 本进程扮演哪一端：producer（产生信号）/ executor（执行信号）

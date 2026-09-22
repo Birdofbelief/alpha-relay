@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="signalchain.demo",
-        description="signal-chain 端到端演示（零凭据、零网络）")
+        description="alpha-relay 端到端演示（零凭据、零网络）")
     parser.add_argument("--keep", action="store_true",
                         help="保留临时运行目录以便查看产物")
     parser.add_argument("--quiet", action="store_true",
