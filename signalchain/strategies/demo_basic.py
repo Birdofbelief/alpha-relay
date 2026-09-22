@@ -15,7 +15,7 @@
 ## 标的池说明
 
 下面那几个代码只是**占位用的宽基 ETF**，与任何人的实际标的池无关。
-真正的策略应该把它换成自己的池子，并**从仓库外加载**（见 `strategies/__init__.py`）。
+真正的策略应该把它换成自己的池子，并**从仓库外加载**（见 `signalchain/strategies/__init__.py`）。
 """
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ from __future__ import annotations
 # 直接运行本文件时的友好出口
 # ──────────────────────────────────────────────────────────────
 # 这个文件是「策略模块」，不是可执行脚本 —— 被 import 时它只定义一个类。
-# 但直接运行它（`py strategies/demo_basic.py`）会先炸在下面那行 import 上：
-# 工作目录是 strategies/，仓库根不在 sys.path 里，于是找不到 `signalchain`。
-# 那个 traceback 对新手没有任何信息量，所以在这里给一个说人话的出口。
+# 直接运行它（`python signalchain/strategies/demo_basic.py`）没有意义：没装过这个包的
+# 话，还会先炸在下面那行 import 上 —— 脚本所在目录进了 sys.path，仓库根没有，
+# 于是找不到 `signalchain`。那个 traceback 对新手没有任何信息量，
+# 所以在这里给一个说人话的出口。
 #
 # ★ 这个块必须待在 signalchain 的 import **之前**。放到文件末尾是没用的 ——
 #   import 先失败，根本走不到那儿。（第一版就写在了末尾，被实测打回。）
@@ -33,9 +34,9 @@ if __name__ == "__main__":
     raise SystemExit(
         "这个文件是「策略模块」，不是可执行脚本。\n"
         "\n"
-        "要跑演示，请先切到仓库根目录，然后执行：\n"
+        "要跑演示（装了包的话在任何目录都行）：\n"
         "\n"
-        "    py -m signalchain.demo\n"
+        "    python -m signalchain.demo\n"
         "\n"
         "把它当库用：\n"
         "\n"

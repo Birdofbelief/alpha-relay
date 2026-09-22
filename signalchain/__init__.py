@@ -37,7 +37,7 @@
 
 ## 最快上手
 
-想先看它跑起来：`py -m signalchain.demo`
+想先看它跑起来：`python -m signalchain.demo`
 （零凭据、零网络、零券商；跑完把四个 channel 的真实字节都打出来）
 
 作为库用：
@@ -64,6 +64,53 @@
 from __future__ import annotations
 
 __version__ = "0.1.0"
+
+# ------------------------------------------------------------
+# ★ 依赖缺失时先说人话
+# ------------------------------------------------------------
+# 这是别人 clone 下来会撞上的**第一种**失败：照 README 敲第一条命令，拿到的是一条
+# 十几行的 traceback，最后一行 `ModuleNotFoundError: No module named 'pandas'`。
+# 它说了「缺什么」，但没说「怎么办」—— 而对刚上手的人，Traceback 本身就是劝退。
+#
+# 实测（2026-09-22，全新 venv、零第三方包、从仓库根跑 `python -m signalchain.demo`）：
+#     退出码 1，输出 14 行，末行就是上面那句。
+#
+# ⇒ 换成一条带**可直接粘贴的安装命令**的报错。
+#   两个包都在这儿挡，因为它们在**导入期**就是硬依赖：`marketdata/base.py` 与
+#   `marketdata/online.py` 都是模块级 import。已用 meta_path 探针逐个实测 ——
+#   假装没有 requests 也一样在 import 时就炸，不是「只有用到网络才需要」。
+#
+# ★ 只认这两个名字，别的一律原样抛出 —— 把真正的 bug 也包装成「去装依赖」会把人带沟里。
+#
+# ★ 刻意抛 `ImportError` 而不是 `print + SystemExit`：库在 import 期自杀会让调用方
+#   **抓不住**（`try: import signalchain / except ImportError` 拦不到 SystemExit），
+#   而且会在别人的进程里直接掐死进程。`from None` 把原来那条 traceback 的上下文去掉，
+#   输出就只剩「这条消息 + 几行栈」，不再是十几行。
+# ★ 消息只用 **GBK 里有的符号**（中文标点都在，避开 `⇒`/`✓` 这类）：这条报错是在
+#   `setup_logging()` 之前发生的，此时 stderr 在重定向场景下就是 cp936 ——
+#   用了 GBK 没有的字符，读者看到的会是转义序列。同一条纪律见 console.py。
+try:
+    from importlib import import_module as _import_module
+
+    _import_module("pandas")
+    _import_module("requests")
+    del _import_module
+except ModuleNotFoundError as _exc:
+    _missing = (_exc.name or "").split(".")[0]
+    if _missing not in ("pandas", "requests"):
+        raise
+    raise ImportError(
+        f"signal-chain 缺少运行时依赖：{_missing}\n"
+        "\n"
+        "装一次就行（运行时只需要这两个包）：\n"
+        "\n"
+        "    python -m pip install requests pandas\n"
+        "\n"
+        "Windows 上如果 `python` 打不开、或把你送进微软商店，\n"
+        "就把上面的 python 换成 py。\n"
+        "（这条报错是刻意换掉的：原本这里是一条 ModuleNotFoundError traceback，\n"
+        "  只说缺什么、没说怎么办。见本文件顶部。安装说明在 README 的「快速上手」。）"
+    ) from None
 
 from .calendar import TradingCalendar, make_static_calendar, weekday_calendar
 from .chain import Chain, build_chain, build_file_chain

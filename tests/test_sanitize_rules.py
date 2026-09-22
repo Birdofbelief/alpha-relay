@@ -28,7 +28,7 @@
 
 本文件要写一堆「应该被扫描器抓到」的示例。但如果它们以完整形态出现在源码里，
 **这个文件自己就会成为扫描器的命中项** —— 而它必须通过同一道门禁
-（`py tools/sanitize_check.py --all`）。
+（`python tools/sanitize_check.py --all`）。
 
 所以所有诱饵都由 `_bait()` 在**运行期**拼出来，源码里没有任何一个完整形态。
 这不是取巧：它顺带证明了「扫描器扫的是文本，不是意图」——
@@ -371,8 +371,9 @@ def test_demo_strategy_does_not_trip_the_author_markers():
     （这条原来打的是内置规则；规则搬出仓库后，它跟着清单走。）
     """
     markers = san.load_markers(_AUTHOR_MARKERS).rules
-    demo = (REPO_ROOT / "strategies" / "demo_basic.py").read_text(encoding="utf-8")
-    assert san.scan_text("strategies/demo_basic.py", demo, markers) == []
+    demo = (REPO_ROOT / "signalchain" / "strategies" / "demo_basic.py").read_text(
+        encoding="utf-8")
+    assert san.scan_text("signalchain/strategies/demo_basic.py", demo, markers) == []
 
 
 # ============================================================
@@ -721,6 +722,22 @@ def test_the_pre_commit_hook_invokes_the_scanner_the_documented_way():
 
     真跑一次的验证方法（手工，写在 `docs/SANITIZATION.md`）：往暂存区放一个
     命中项，`git commit` 必须被拒。
+
+    ## 2026-09-22 手工实测（本机 Git Bash，每条各跑一次）
+
+    三条失败路径**都不长得像「通过」**，这是它们的全部意义：
+
+        sh .githooks/pre-commit                             → 放行，退出码 0
+        env PATH=/nonexistent /usr/bin/sh .githooks/pre-commit
+                                             → 「钩子没跑起来」，退出码 1
+        （把上面的 PATH 换成「只有微软商店占位程序」那个目录，结果同上 ——
+          候选被「试跑一次」筛掉了。实测占位程序 `command -v` 命中、
+          `python -c pass` 退出码 49、零输出。）
+        分支本身另用一个假扫描器隔离验证（STUB_EXIT=0/1/2 → 三种不同的话）。
+
+    ★ 反事实（= 老逻辑长什么样）：只按存在性挑，**实测选中占位程序 `python3`**，
+      扫描器以 49 退出；老钩子把任何非零都当成命中，于是对着一个干净的暂存区
+      **指控提交者泄漏了凭据**。这就是这条断言存在的理由。
     """
     hook = REPO_ROOT / ".githooks" / "pre-commit"
     assert hook.exists(), (
@@ -729,17 +746,75 @@ def test_the_pre_commit_hook_invokes_the_scanner_the_documented_way():
 
     text = hook.read_text(encoding="utf-8")
 
-    assert "py tools/sanitize_check.py --staged" in text, (
+    assert '"$PY" tools/sanitize_check.py --staged' in text, (
         "钩子没有按文档规定的写法调扫描器。\n"
-        "★ 必须是 `py tools/sanitize_check.py --staged`：写成 `./tools/...`、"
-        "或给扫描器加 shebang，都会让这个钩子**每次都拦住提交并指控有凭据泄漏**"
-        "（见 `docs/SANITIZATION.md` 与 `tools/sanitize_check.py` 末尾）。")
+        "★ 必须是 `<解释器> tools/sanitize_check.py --staged`（解释器由变量传入）："
+        "写成 `./tools/...`、或给扫描器加 shebang，都会让这个钩子"
+        "**每次都拦住提交并指控有凭据泄漏**"
+        "（见 `docs/SANITIZATION.md` 与 `tools/sanitize_check.py` 末尾）。\n"
+        "★ 解释器也不能写死成某一个名字 —— 见下面那条断言。")
+
+    # ★★ 解释器必须**挑**出来，不能写死。
+    #   2026-09-22 实测（PATH 里没有 `py` 的机器 = 所有 macOS / Linux）：
+    #   `py: command not found` 之后钩子**照样往下走**，`$?` 拿到 127，
+    #   于是提示变成「暂存区存在凭据或私有策略指纹」—— **一次假指控**，
+    #   受害者会去查自己的 diff，而不是查钩子。
+    #   这和上面 docstring 记的「门禁根本没挂上」是**同一类失效的两种形态**：
+    #   一种是不跑，一种是跑了但报一个假结论。两者都是静默的。
+    # ★ 必须看**那个循环**里的候选，不能看全文 —— 失败提示里也写着
+    #   「试过：py / python3 / python」，按全文数的话，把循环换成 `PY=py`
+    #   而留着提示，这条断言照样绿（一个自己造的假绿灯）。
+    _loop = re.search(r"^\s*for\s+\w+\s+in\s+(.+?);?\s*do\s*$", text, re.M)
+    assert _loop, (
+        "钩子里没有「遍历候选解释器」的循环 —— 解释器被写死了。\n"
+        "★ 非 Windows 上没有 `py`（Windows 的启动器，python.org 安装包才带）；"
+        "写死它的下场是钩子拿退出码 127 去报「发现凭据泄漏」。")
+    _launchers = [name for name in ("py", "python3", "python")
+                  if name in _loop.group(1)]
+    assert len(_launchers) >= 2, (
+        f"那个循环的候选只有 {_launchers} —— 等于写死一个名字。\n"
+        "★ 非 Windows 上没有 `py`；写死它的下场是钩子拿退出码 127 去报"
+        "「发现凭据泄漏」。")
+
+    # 而「挑」必须包含一次**试跑**，不能只看存在性：
+    # Windows 上 `python3` / `python` 常是微软商店的占位程序 ——
+    # `command -v` 命中，一执行就静默退出（实测退出码 49、零输出），
+    # 只查存在性会正好选中它，然后又是一次假指控。
+    assert re.search(r"""-c\s+['"]pass['"]|--version""", text), (
+        "钩子挑解释器时没有**试跑一次**，只在查存在性（`command -v`）。\n"
+        "★ 占位程序 `command -v` 能命中但一执行就退出 —— 选中它等于没选。")
 
     # 命中时必须真的**拒绝**。只打印警告然后放行，门禁就是装饰品。
     assert re.search(r"exit\s+1", text), (
         "钩子里没有 `exit 1` —— 扫描命中时提交不会被拒绝。"
         "一个只会打印警告的钩子在终端上和拦住的钩子长得一样，"
         "而代价是把泄漏放进 git 历史。")
+
+    # 三种失败必须**长得不一样**（扫描器自己的失效路径不许和命中路径混淆）：
+    #   ① 找不到解释器 ⇒ 是「这次检查没做」，不是「发现了凭据」
+    #   ② 扫描器退出码 2 ⇒ 是「扫描器自己出错、本次结果无效」
+    #   ③ 其余非零 ⇒ 才是「暂存区有凭据」
+    # 混起来的代价：①会被当成③（假指控，害人白查 diff），
+    # ②会被当成「通过」（无效检查冒充有结论的检查）。
+    # 下面两条都**先钉分支本身、再钉它说了什么** —— 只按全文找那句提示词是不够的：
+    # 提示词也可以只出现在注释里（注释不执行任何判断）。
+    # 行为验证靠手工各跑一次（命令见本测试 docstring）。
+    _nolauncher = re.search(r'-z\s+"\$PY"', text) or re.search(
+        r"!\s*\[\s*-n\s+\"\$PY\"", text)
+    assert _nolauncher, (
+        "钩子没有「找不到解释器」这个**分支** —— 没有它，`$PY` 为空时会带着"
+        "一个空命令往下走")
+    assert "脱敏钩子没跑起来" in text[_nolauncher.end():], (
+        "「找不到解释器」那条分支没有说出自己的结论（是「这次检查没做」，"
+        "不是「发现凭据」）—— 混起来的代价是一次假指控，"
+        "受害者会去查自己的 diff 而不是查钩子")
+
+    _scannerror = re.search(r'\$status"?\]?\s*-eq\s+2\b', text)
+    assert _scannerror, (
+        "钩子没有把「扫描器自身出错（退出码 2）」单独分出来 —— "
+        "一次**无效**的扫描会被当成一次**有结论**的扫描")
+    assert "自身出错" in text[_scannerror.end():], (
+        "退出码 2 那条分支没有说出自己的结论（本次结果无效）")
 
     # 没有出口的门禁会被整体关掉（`--no-verify` 全局化），出口要写在明处。
     assert "--no-verify" in text, (

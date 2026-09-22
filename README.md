@@ -8,9 +8,18 @@
 
 **把「策略」和「把策略的信号安全送到券商」拆开的框架。**
 
+一句话：**你的 alpha 留在自己机器上，框架负责把它安全送到。**
 策略在**你自己的机器上**跑（数据从 akshare / tushare 或你自己的源来），
 只需要实现一个 `decide(ctx)`；数据质量校验、风控闸门、投递、重试、回执、
 持仓对账、调度、心跳、告警，全部由链路负责。
+
+**给谁用**
+
+- 策略已经能跑，但**「跑通」和「敢让它自己天天跑」之间还差一整套管路**的人 ——
+  重试、写者唯一、回执、对账、心跳、告警在这里是现成的，而且**每一块都能换**。
+- 想把策略放在**仓库外、券商平台外**的人 —— 这两处正是 alpha 最容易漏出去的地方。
+- 想**离线验证**策略的人 —— `decide(ctx)` 是纯函数，所以能回放；
+  回放不了的策略没法验证，只能靠信仰。
 
 **投递通道可拔插**（本地文件 / Gist / 空实现，或**你自己写的任意存储** ——
 把后端类放进仓库外一个 `.py` 文件，配置里指个路径就完事，框架一行不用改），
@@ -18,8 +27,14 @@
 策略从**仓库外路径**加载：**你的 alpha 不进这个仓库，也不进券商平台。**
 
 ```
-零凭据、零网络、零券商也能完整跑通：py -m signalchain.demo
+三步跑起来（Python 3.10+）：
+    python -m pip install requests pandas   # 第一次跑：装仅有的两个运行时依赖
+    python -m signalchain.demo              # 零凭据、零网络、零券商，跑完打印四个 channel 的真实字节
+    python -m pytest                        # 全部离线，不需要任何凭据
 ```
+
+> Windows 上 `python` 若打不开、或把你送进微软商店，把命令里的 `python` 换成
+> `py`；也可以直接双击 `demo.cmd`。详见[快速上手](#快速上手)。
 
 > **English** — *signal-chain* decouples a trading strategy from the plumbing that
 > delivers its signals safely. Your strategy runs on **your own machine** and implements
@@ -34,8 +49,8 @@
 > from paths outside this repository, so
 > **your alpha never enters this repo, and never enters the broker's platform either.**
 > The chain runs end to end with **zero credentials, zero network and zero broker**
-> — install the two runtime deps first (`py -m pip install requests pandas`),
-> then `py -m signalchain.demo`. Design notes and reference docs are written in
+> — install the two runtime deps first (`python -m pip install requests pandas`),
+> then `python -m signalchain.demo`. Design notes and reference docs are written in
 > Chinese; this README is the entry point.
 
 ---
@@ -182,24 +197,45 @@ executions ← 只有执行端能写
 ### 先看它跑
 
 ```bash
-py -m pip install requests pandas   # 运行时依赖只有这两个，装一次
-py -m signalchain.demo
+python -m pip install requests pandas   # 运行时依赖只有这两个，装一次
+python -m signalchain.demo
 ```
 
 零凭据、零网络、零券商 —— 有依赖，但没有需要你填的东西。
 跑完会打印四个 channel 的**真实落盘字节**，包括执行端回写的持仓与成交回执。
 
-> **Windows 用户：也可以直接双击 `demo.cmd`。**
+> **Windows 用户：如果 `python` 打不开、或者一闪而过什么都不打印，把命令里的
+> `python` 换成 `py`。**
+>
+> 上面写 `python -m`，是因为那是 macOS / Linux 上通用的写法；`py` 是 Windows
+> 自带的启动器（装 python.org 的安装包时一起装上的）。两者只差**命令怎么写**，
+> 跑出来的东西是一样的 —— 本文档里所有 `python -m …` 都同理。
+>
+> 敲 `python` 若把你送进了微软商店：那个是 Windows 的**占位程序**，不是 Python
+> 本身，说明 `PATH` 里没有真的 Python（重装时勾上 *Add python.exe to PATH*）。
+> 已经装好但 `python` 仍指向商店的，用 `py` 直接绕过去。
+>
+> **也可以直接双击 `demo.cmd`。**
 >
 > 双击一个 `.py` 只会让黑框闪一下就没了 —— 窗口在进程退出时立刻关闭，
 > 里面打印的东西（不管成功还是报错）你根本来不及看。`demo.cmd` 就是为这个
-> 存在的：它跑完会**停住等你按键**，失败时还会把常见原因列出来。
+> 存在的：它跑完会**停住等你按键**，失败时还会把常见原因列出来 ——
+> 它会**优先用 `py`**，没有才退回 `python`（见 `demo.cmd` 里 `where py` 那几行）。
 >
-> 顺带一提，直接双击 `strategies/demo_basic.py` 看到的那个黑框也是同一个
-> 问题，且那时它其实在报 `ModuleNotFoundError` —— 那个文件是**策略模块**不是
-> 脚本，它在这里就等着告诉你该跑哪个命令。
+> 顺带一提，直接双击 `signalchain/strategies/demo_basic.py` 看到的那个黑框
+> 也是同一个问题 —— 那个文件是**策略模块**不是脚本，它在那里就等着告诉你
+> 该跑哪个命令。
 
 ### 作为库用
+
+> ★ 下面这段得能 `import signalchain`，而它**不在**你的 `site-packages` 里。
+> 二选一：
+>
+> - **在仓库根目录跑**这个脚本（`import` 会找到当前目录下的包）—— 只是试一下就选这个；
+> - 或者先 `python -m pip install .` 装一次，之后**任何目录**都能 `import`。
+>
+> （漏了这一步的报错是 `ModuleNotFoundError: No module named 'signalchain'`，
+> 不是框架坏了。）
 
 ```python
 from signalchain import build_file_chain, setup_logging
@@ -215,14 +251,21 @@ print(result.summary())
 策略文件放在**仓库外**，用路径加载：
 
 ```python
-chain = build_file_chain("./runtime", strategy="./my_private.py")
+chain = build_file_chain("./runtime", strategy="../my_private.py")
 ```
 
-或设环境变量 `SC_STRATEGY_PATH`。`.gitignore` 另外兜了一层
-（`strategies/private*`）—— 但真正的保障是**它根本不在这个仓库里**。
+★ 路径按**你的运行目录**解析（不是相对仓库根）。所以上面写 `../`：
+你多半在仓库根目录跑脚本，`./my_private.py` 恰好等于**把 alpha 放进仓库里** ——
+正好是这条路要避免的事。（`.gitignore` 兜了一层 `strategies/private*`，
+但**别靠它**：认的是名字不是位置，真正的保障是文件根本不在仓库里。）
 
-一个策略的最小形态（与 [`strategies/demo_basic.py`](strategies/demo_basic.py) 同结构，
-`tests/test_strategy_contract.py` 里有一份等价的实现被真的跑过）：
+或设环境变量 `SC_STRATEGY_PATH` —— 注意它**只对 `build_chain()` 生效**：
+`build_file_chain()` 刻意只认显式传进来的 `strategy=`，不看环境变量。
+路径写错时**不会**静默退回内置策略，会报 `FileNotFoundError`。
+
+一个策略的最小形态（与
+[`signalchain/strategies/demo_basic.py`](signalchain/strategies/demo_basic.py)
+同结构，`tests/test_strategy_contract.py` 里有一份等价的实现被真的跑过）：
 
 ```python
 from signalchain import Strategy, ACTION_BUY
@@ -260,6 +303,47 @@ class MyStrategy(Strategy):
   回放同一天的行情会生成一批全新 id，「这条处理过没有」就永远答「没有」。
 - `decide()` 可以返回列表，也可以是生成器。
 
+### 换成你自己的投递后端
+
+写一个 `Transport` 子类，放进**仓库外**的 `.py` 文件，然后把路径交给配置：
+
+```bash
+# .env
+SC_TRANSPORT=../my_objectstore.py
+```
+
+三个方法，其余什么都不用写（完整示例见
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第六节）：
+
+```python
+from signalchain.transport import Transport
+
+
+class MyObjectStorage(Transport):
+    def read(self, channel):        # -> 文档对象，没有则 None
+        ...
+    def write(self, channel, doc):  # 整份替换（不是追加）；成功返回 True
+        ...
+    def describe(self):             # 一句话自报身份（**不得含凭据**），会进日志与心跳
+        return "objectstore(我的桶)"
+```
+
+文件里**只有一个** `Transport` 子类时自动选它；有多个（辅助类很常见）必须在文件里
+显式指定一行，**二选一**：
+
+```python
+TRANSPORT = MyObjectStorage                  # 类本身 → 框架无参构造它
+TRANSPORT = MyObjectStorage.from_env         # 零参工厂 → 构造需要参数时用这个
+```
+
+> ★ **构造需要参数（endpoint / key / 桶名……）就用第二种。** 写第一种会得到一条
+> `TypeError` —— 现在它会明确告诉你该改成 `from_env`，或改成装配时直接传
+> `build_chain(config, transport=MyObjectStorage(endpoint, key))`。
+> 工厂名不必叫 `from_env`，叫什么都行；先例是内置的 `GistTransport.from_env`。
+
+写错名字**会报错，不会悄悄退回 `file`** —— 静默退化的后果不是「少个功能」，
+是两端写到了两处不同的存储，而两边日志都显示成功。
+
 ### 换成你自己的执行端
 
 执行端的契约是 **`Executor` 那三个方法**。它是结构化类型（`typing.Protocol`）——
@@ -289,7 +373,7 @@ chain = build_chain(config, strategy="./my_private.py", executor=executor)
 
 ### 它实际跑起来是什么样
 
-下面是 `py -m signalchain.demo` 的真实输出（只做了两处删减：临时目录路径、
+下面是 `python -m signalchain.demo` 的真实输出（只做了两处删减：临时目录路径、
 与本节无关的重复轮次）。四段值得注意的地方：
 
 **① 所有权绑在「角色」上，不是绑在「进程」上。** 纸面执行器就在同一个进程里，
@@ -406,7 +490,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 
 | 场景 | 用什么 |
 |---|---|
-| **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零外部服务（只需 `requests` + `pandas` 两个包）—— `py -m signalchain.demo` 走的就是这条 |
+| **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零外部服务（只需 `requests` + `pandas` 两个包）—— `python -m signalchain.demo` 走的就是这条 |
 | **跨机器，你已有对象存储** | 自己写一个 `Transport` 子类（三个方法，几十行）放进**仓库外**的 `.py` 文件，然后 `SC_TRANSPORT=../my_objectstore.py` 指过去 —— 框架一行不用改，写法见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第六节。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
 | **跨机器，想先用现成的** | 内置的 `GistTransport` 是一个**参考实现**：它演示了「怎么把一个只会整份读写的 HTTP 服务包成 `Transport`」。能用，但它不是唯一的、也不是默认推荐的那个 |
 
@@ -421,7 +505,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 ## 跑测试
 
 ```bash
-py -m pytest              # 289 项，全部离线，不需要任何凭据
+python -m pytest              # 294 项，全部离线，不需要任何凭据
 ```
 
 同一套测试也跑在 CI 上（Ubuntu + Windows × Python 3.10 / 3.12 / 3.13，
@@ -432,13 +516,20 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 而那是**本机配置、不随 clone 带走** —— 也就是说别人克隆下来默认是不设防的，
 所以服务端补一道。
 
-> 上面那个 **289** 是手工写的，会随代码变化。**以实测为准**：
-> `py -m pytest` 看退出码（0 = 全过）。
+> 上面那个 **294** 是手工写的，会随代码变化。**以实测为准**：
+> `python -m pytest` 看退出码（0 = 全过）。
 >
-> ⚠️ **公开克隆里是 `287 passed, 2 skipped`** —— 有两条测试带 `skipif`，
+> ⚠️ **公开克隆里是 `292 passed, 2 skipped`** —— 有两条测试带 `skipif`，
 > 条件正是「作者本机那份私有指纹清单在不在」，在公开克隆里**必然跳过**。
 > 它们**只对本机有意义**（验的是那份清单自洽、且本仓库不踩它），
 > 所以这是设计，不是测试被削弱 —— 但**别把 `2 skipped` 读成「全跑过了」**。
+>
+> 这两个数是**量出来的**（2026-09-22），不是数出来的：按 `git ls-files` 复制一份
+> 工作区（= 别人 clone 拿到的那个文件集合，行尾也按 git 的属性归一化过），
+> 装进一个只有 `pip` / `setuptools` 的空 venv、补上两个运行时依赖 + pytest，
+> 并**显式清掉** `PYTHONUTF8` / `PYTHONIOENCODING` / `PYTHONPATH` / `TZ`
+> 之后跑出来的。最后一条不是洁癖：本机设了 `PYTHONUTF8=1`，
+> 不清掉的话「在我机器上绿」是**假绿**。
 
 测试覆盖面（值得单说的几组）：
 
@@ -478,6 +569,9 @@ CI 里还会多跑一遍脱敏扫描：本地那个 pre-commit 钩子依赖 `cor
 
   没开的话扫描器**一次都不会跑**，而提交看起来完全正常 —— 正是下面说的
   那种「失效和通过长得一模一样」。
+- 钩子**自己挑解释器**（`py` → `python3` → `python`，且会试跑一次确认它真能
+  执行），所以 macOS / Linux 上不必管 `py` 存不存在。挑不到解释器时它说的是
+  「**这次检查没做**」，不会诬告你泄漏了凭据 —— 三条失败路径各说各的话。
 - 它的每一条规则都有**反向测试**（`test_sanitize_rules.py`）：不只测「干净输入
   不报」，还测「脏输入必须报」。
 
@@ -498,7 +592,7 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 ```
 
 **默认后端（本地文件）一个变量都不用设** —— 连 `.env` 都不建也能跑起来，
-`py -m signalchain.demo` 就是这条路径。需要填的是两件事：
+`python -m signalchain.demo` 就是这条路径。需要填的是两件事：
 
 - `SC_STRATEGY_PATH` —— 如果你的策略在仓库外（推荐，也是默认姿势）；
 - `SC_GIST_ID` / `SC_GITHUB_TOKEN` / `SC_SERVERCHAN_KEY` —— 只有你选了 Gist 那个
@@ -516,7 +610,7 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 |---|---|
 | **设计来源** | 这套分层、闸门方向、单一写入者约定，来自一个**真实在跑的实盘系统**（单文件形态，产生端与执行端分离）。文档里那些「为什么」不是推演出来的。 |
 | **本仓库的状态** | ⚠️ **它是从上面那套系统里独立提取出来的，尚未替换线上。** 也就是说：**设计经过实战，这份提取产物本身还没有在生产上跑过。** 请按「可用的框架 + 未经实战的组装」看待它。 |
-| **测试证明了什么** | 289 项全离线（公开克隆 287 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权、两端可拔插、输出不崩）。它**不验证任何策略的收益**。 |
+| **测试证明了什么** | 294 项全离线（公开克隆 292 + 2 条跳过），验证的是**链路的正确性**（幂等、闸门方向、线格式、所有权、两端可拔插、输出不崩）。它**不验证任何策略的收益**。 |
 | **没有的东西** | 没有券商客户端 —— 仓库里只有 `PaperExecutor` 这个**无券商占位**，真执行端你自己接（[怎么接](#换成你自己的执行端)）；没有 Web UI、没有数据库。 |
 | **投递后端** | 内置 `file` / `gist` / `null` 三个**示例**：同机用 `file` 就够；跨机器该选哪一种，见上面[跨机器那一节](#跨机器信号怎么从产生端走到执行端)。**换成别的存储（对象存储、自建 HTTP、网络盘）得由你自己实现**：每家券商终端能读到的存储不一样，这里替不了你。实现完**不用改这个仓库** —— 后端类放仓库外，配置里指个路径（`SC_TRANSPORT=../x.py`），或装配时 `build_chain(transport=...)`；**取值写错会报错，不会悄悄退回 `file`**，因为那会让两端写到两处不同的存储、而两边日志都显示成功。 |
 | **不做回测** | 本框架和回测框架是**正交**的，不是竞争关系。把判断写成纯函数 `decide(ctx)`：回测时给 backtrader / qlib 写一层薄适配去调它，实盘时由本框架调**同一个函数**。**策略本体不写两遍 —— 两边各写一次的，是适配层。** 框架里没有回测引擎，也不打算有。 |
@@ -555,9 +649,18 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 - 运行时依赖只有 `requests` + `pandas`
 - `akshare` 用来取**交易日历**。零依赖 demo（`build_file_chain`）自带离线日历，不需要它；
   但**默认的实盘装配 `build_chain()` 需要它**——不装的话日历不可用，程序会把**每一天**
-  都判成非交易日：进程活着、心跳照旧，**一个任务都不跑**。装：`py -m pip install akshare`
+  都判成非交易日：进程活着、心跳照旧，**一个任务都不跑**。装：`python -m pip install akshare`
 - 使用方式是「clone 下来直接跑」：**不用把 signal-chain 装成依赖，但两个运行时依赖得自己装**——
-  `py -m pip install requests pandas`（见 [`pyproject.toml`](pyproject.toml)）
+  `python -m pip install requests pandas`（见 [`pyproject.toml`](pyproject.toml)）
+- **时间一律按「本机本地时间」解释，语义基准是北京时间**（A 股的开盘、收盘、
+  补执行窗口都是按北京时间写的）。调度用的是**裸的本地时间、全程没有时区概念**：
+  任务时刻以 `datetime.strptime(f"{day} {at}", "%Y-%m-%d %H:%M")` 与本机
+  `datetime.now()` 直接比较（见 `signalchain/runner.py` 的 `due_tasks` /
+  `self.clock = clock or datetime.now`）。
+  ⇒ 机器时区不对**不会报错，只会在错的时间跑**：在 UTC 的机器上，一个 09:30 的任务
+  会等到北京时间 17:30 才触发。云端或容器里跑之前，**先把时区设成 `Asia/Shanghai`**。
+- Windows 上若 `python` 指向微软商店（占位程序，执行无输出），把命令里的 `python`
+  换成 `py`——见[快速上手](#快速上手)里那段说明。
 
 ## License
 

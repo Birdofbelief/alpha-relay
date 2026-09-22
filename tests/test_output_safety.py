@@ -234,7 +234,7 @@ def test_documented_command_survives_a_non_utf8_console(encoding, quiet):
     """
     args = ["-m", "signalchain.demo"] + (["--quiet"] if quiet else [])
     proc = _run_in_a_console(args, encoding)
-    _assert_clean_run(proc, "py -m signalchain.demo", encoding)
+    _assert_clean_run(proc, "python -m signalchain.demo", encoding)
 
 
 @pytest.mark.parametrize("encoding", CONSOLE_ENCODINGS)

@@ -9,21 +9,62 @@
 # 安装：git config core.hooksPath .githooks
 # 绕过（仅在确认误报时）：git commit --no-verify
 #
-# ⚠️ 调用方式必须是 `py tools/sanitize_check.py`，不能写成 `./tools/sanitize_check.py`
-#    或给那个脚本加 shebang —— 详见 tools/sanitize_check.py 末尾关于「看不见的失效」。
+# ⚠️ 调用方式必须是 `<解释器> tools/sanitize_check.py`，不能写成
+#    `./tools/sanitize_check.py`，也不能给那个脚本加 shebang —— 详见
+#    tools/sanitize_check.py 末尾关于「看不见的失效」。
 #    本钩子曾经因为一个 shebang 而**每次都拦住提交并指控有凭据泄漏**。
+#    ★ 同一个症状 2026-09-22 **又复发了一次，成因不同**：见下面挑解释器那段。
 # ============================================================
 
-echo "[pre-commit] 脱敏扫描（暂存区）..."
-py tools/sanitize_check.py --staged
-status=$?
+# ★ 解释器必须**挑一个真能跑的**，不能写死某一个名字。
+#
+#   写死 `py` 的后果（2026-09-22 在 PATH 里没有 py 的机器上实测 = 所有 macOS/Linux）：
+#   `py: command not found` 之后钩子**照样往下走**，`$?` 拿到 127，
+#   于是每一句提示都指向「暂存区存在凭据或私有策略指纹」—— **一次假指控**。
+#   受害者会去查自己的 diff，而不是查钩子。
+#   （第 12-16 行那个 shebang 事故症状一模一样、成因不同。这是
+#    「检查器的失效路径必须和它的通过路径长得不一样」那条教训的又一次复发，
+#    见 tools/sanitize_check.py 末尾。）
+#
+#   ★ 为什么不能只 `command -v`：Windows 上 `python3` / `python` 经常是微软商店的
+#   **占位程序** —— `command -v` 命中，一执行就静默退出（实测退出码 49、零输出）。
+#   只查存在性会选中它，然后又是一次假指控。
+#   ⇒ 所以这里**试跑一次**（`-c pass`）再采信。
+PY=""
+for candidate in py python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+       && "$candidate" -c "pass" >/dev/null 2>&1; then
+        PY="$candidate"
+        break
+    fi
+done
 
-if [ $status -ne 0 ]; then
+if [ -z "$PY" ]; then
     echo ""
-    echo "⛔ 提交被拒绝：暂存区存在凭据或私有策略指纹。"
-    echo "   处理方式见 docs/SANITIZATION.md。"
-    echo "   确认是误报才用：git commit --no-verify"
+    echo "⛔ 提交被拒绝：**脱敏钩子没跑起来**（找不到可用的 Python 解释器）。"
+    echo "   试过：py / python3 / python —— 要么不在 PATH 里，要么一执行就没输出。"
+    echo "   ★ 这**不是**「发现了凭据」，是这次检查**根本没做**。"
+    echo "   装一个 Python 3.10+ 再提交；确认要跳过检查才用：git commit --no-verify"
     exit 1
 fi
 
-exit 0
+echo "[pre-commit] 脱敏扫描（暂存区，用 $PY）..."
+"$PY" tools/sanitize_check.py --staged
+status=$?
+
+if [ "$status" -eq 0 ]; then
+    exit 0
+fi
+
+echo ""
+if [ "$status" -eq 2 ]; then
+    # 退出码 2 = 扫描器**自己**出错（输入不合法 / 自身崩溃），不是命中。
+    # 混进「发现凭据」里说，会把一次无效检查说成一次有结论的检查。
+    echo "⛔ 提交被拒绝：脱敏扫描器**自身出错**（退出码 2）—— 本次结果无效，"
+    echo "   既不能当「通过」，也不能当「发现凭据」。看它上面那段输出。"
+else
+    echo "⛔ 提交被拒绝：暂存区存在凭据或私有策略指纹（退出码 $status）。"
+    echo "   处理方式见 docs/SANITIZATION.md。"
+fi
+echo "   确认是误报才用：git commit --no-verify"
+exit 1

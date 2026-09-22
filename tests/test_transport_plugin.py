@@ -319,6 +319,47 @@ TRANSPORT = make_store
     assert store.describe() == "objectstore(调过参)"
 
 
+def test_a_class_that_needs_arguments_says_who_to_use_from_env(tmp_path):
+    """★ 最容易被劝退的那一步：`TRANSPORT = 我的类`，而那个类构造要参数。
+
+    实测（2026-09-22，外部读者照 README 的「写一个 Transport 子类」写，
+    后端构造要 endpoint/key）拿到的是**裸的** Python 报错：
+
+        TypeError: MyObjectStorage.__init__() missing 2 required positional
+        arguments: 'endpoint' and 'key'
+
+    它说的是 Python 语法，不是「你该改什么」；全文没有出现 `from_env` ——
+    而读者此刻正站在文档里写着「几十行就能接上」的那个扩展点上。
+    所以这条测试钉的是：报错必须**指出 ① 零参工厂**这条路。
+
+    ★ 仍然抛 `TypeError`（不换成自定义异常）：调用方可能已经在抓 TypeError，
+      换类型是悄悄改接口。这条测试连类型一起钉住。
+    """
+    path = _write(tmp_path, "needsargs.py", _OBJECTSTORE_SRC + '''
+
+
+class NeedsArgs(MyObjectStorage):
+    def __init__(self, endpoint: str, key: str):
+        self.endpoint = endpoint
+        self.key = key
+
+
+TRANSPORT = NeedsArgs
+''')
+    cfg = Config(role="producer", transport=str(path), runtime_dir=tmp_path / "r")
+    with pytest.raises(TypeError) as e:
+        load_transport(cfg)
+    msg = str(e.value)
+    assert "NeedsArgs" in msg, "报错没说是哪个类"
+    assert "from_env" in msg, (
+        "报错里没有 `from_env` —— 读者拿到的是「Python 语法错了」，"
+        "而不是「这里该写零参工厂」")
+    assert "build_chain" in msg, "② 那条路（装配时直接传对象）也要说"
+    # 原始的构造失败原因不许被吞掉：换掉它就成了「猜原因」。
+    assert "required positional argument" in msg, (
+        "原始 TypeError 的正文被丢了 —— 那是读者唯一能看到自己缺了哪几个参数的地方")
+
+
 def test_a_factory_returning_junk_is_rejected(tmp_path):
     """工厂返回的不是后端时**当场**报错，而不是等到链跑到一半。"""
     path = _write(tmp_path, "junk.py", _OBJECTSTORE_SRC + '''

@@ -330,7 +330,10 @@ def load_strategy(target: str) -> Strategy:
     绝不要指向下载来的、别人给的路径。
     """
     if target in ("demo", "demo_basic"):
-        from strategies.demo_basic import DemoBasicStrategy
+        # 相对导入：内置示例在**包内**（`signalchain/strategies/`）。
+        # 它曾经在仓库根的 `strategies/` 下 → `pip install .` 之后这一行
+        # 就是 `ModuleNotFoundError: No module named 'strategies'`。
+        from .strategies.demo_basic import DemoBasicStrategy
         return DemoBasicStrategy()
 
     path = Path(target)

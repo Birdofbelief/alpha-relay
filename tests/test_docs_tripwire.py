@@ -30,14 +30,19 @@ README 和 docstring 里的示例代码是**读者唯一会照着敲的东西**�
 from __future__ import annotations
 
 import importlib
+import os
 import pathlib
 import pkgutil
 import re
+import subprocess
+import sys
 
 import pytest
 
 import signalchain
 from signalchain import ACTION_BUY, Strategy
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _import_lines(text: str) -> list[str]:
@@ -173,7 +178,7 @@ def test_the_quickstart_strategy_argument_is_the_documented_keyword(tmp_path):
     关键字名改了的后果不是报错 —— 是 `TypeError: unexpected keyword argument`，
     而读者会去怀疑自己的策略文件。
     """
-    from strategies.demo_basic import DemoBasicStrategy
+    from signalchain.strategies.demo_basic import DemoBasicStrategy
 
     from signalchain import build_file_chain
 
@@ -183,12 +188,12 @@ def test_the_quickstart_strategy_argument_is_the_documented_keyword(tmp_path):
 
 
 def test_documented_run_command_module_exists():
-    """文档说「想先看它跑：`py -m signalchain.demo`」—— 那个模块得真的在。"""
+    """文档说「想先看它跑：`python -m signalchain.demo`」—— 那个模块得真的在。"""
     import importlib
 
     mod = importlib.import_module("signalchain.demo")
     assert callable(getattr(mod, "run_demo", None)), \
-        "文档里的 `py -m signalchain.demo` 需要模块级 run_demo()"
+        "文档里的 `python -m signalchain.demo` 需要模块级 run_demo()"
 
 
 # ------------------------------------------------------------
@@ -481,3 +486,97 @@ def test_the_template_documents_nothing_that_does_not_exist():
     assert not phantom, (
         f"`.env.example` 里写了这些变量，但**代码从来不读**：{sorted(phantom)}\n"
         f"照着设的人会发现它不生效，然后去查自己的配置 —— 而它根本不存在。")
+
+
+# ============================================================
+# ★ 缺依赖时，读者必须拿到「照着装就行」，而不是一条裸 traceback
+# ============================================================
+# 这守的是**第一次接触**：别人 clone 下来敲的第一条命令。
+# 实测（2026-09-22，全新 venv、零第三方包、从仓库根跑）：
+#     python -m signalchain.demo
+#     → 退出码 1，14 行输出，末行 `ModuleNotFoundError: No module named 'pandas'`
+# 那句只说了「缺什么」，没说「怎么办」—— 而 Traceback 出现在第一次接触时，
+# 代价不是「读者看不懂」，是「读者以为这框架坏了」（同本文件开头那条教训）。
+#
+# ★ 为什么用 meta_path 阻塞，而不是「建个空 venv」：要验的是**导入期**行为，
+#   而建空 venv 得下载十几分钟，且测出来的是「那天镜像快不快」。阻塞法还把
+#   「缺哪个包」变成参数 —— 两个依赖各测一次，顺便证明它们在导入期都是硬依赖。
+_BLOCKED_IMPORT_PROBE = """
+import sys
+
+BLOCKED = (__BLOCKED__,)
+
+
+class _Blocker:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in BLOCKED:
+            raise ModuleNotFoundError("No module named %r" % name, name=name)
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+import signalchain
+
+print("居然 import 成功了：", signalchain.__file__)
+"""
+
+
+def _run_import_probe(blocked):
+    """在子进程里 `import signalchain`，并假装 `blocked` 这个包不存在。
+
+    ★ 探针正文只用 **ASCII** —— 命令行参数里的非 ASCII 会过一层系统代码页
+    转换（见 docs 里「参数编码」那条），这里要测的是导入期行为，
+    不该让那个变量混进来。
+
+    ★★ `BLOCKED` 必须是**元组/集合**（按名字精确比对），不能是字符串。
+       这行最初写的是 `BLOCKED = {blocked!r}`（用 `.format()` 塞进去），
+       结果 `blocked` 落成了一个**字符串** `'requests'` —— 而 `in` 对字符串是
+       **子串匹配**：`"re" in "requests"` 为真，于是解释器去导入 `re` 时被拦，
+       报错却出现在 numpy 里（numpy 的 core 导入失败，被它自己的异常处理器
+       解释成「你从源码目录导入 numpy」）。**一次假绿、一条牛头不对马嘴的红。**
+       现在用 `.replace()` 而不是 `.format()` 塞值：模板里就没有花括号了，
+       也就没有「转义 `{{}}`」那一层次要陷阱。
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    code = _BLOCKED_IMPORT_PROBE.replace("__BLOCKED__", repr(blocked))
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, encoding="utf-8", errors="replace",
+        cwd=str(REPO_ROOT), env=env, timeout=180)
+
+
+@pytest.mark.parametrize("blocked", ["pandas", "requests"])
+def test_missing_dependency_error_says_what_to_install(blocked):
+    """缺依赖时，报错里必须带**可直接粘贴的安装命令**。
+
+    ★ 断言只钉 ASCII 片段，不钉中文原文：这条报错发生在 `setup_logging()`
+      之前，重定向场景下 stderr 就是 cp936，钉中文等于把「编码」这个无关变量
+      引进断言里（本仓库已有同类教训）。
+    """
+    proc = _run_import_probe(blocked)
+    out = (proc.stdout or "") + (proc.stderr or "")
+
+    assert proc.returncode != 0, (
+        f"假装没有 {blocked}，居然还是 import 成功了 —— 探针没生效？\n{out}")
+    assert blocked in out, f"报错里没说是哪个包缺了：\n{out}"
+    assert "python -m pip install requests pandas" in out, (
+        f"缺 {blocked} 时没给出那条可粘贴的安装命令 ——\n"
+        f"读者此刻正卡在第一次接触上，只告诉他「缺什么」等于没帮：\n{out}")
+    # ★ 这一条刻意钉得更窄：`ModuleNotFoundError: No module named` 才是「裸报错」
+    #   的形状。**不能**写 `"ModuleNotFoundError" not in out` —— 我们自己的友好
+    #   消息里就提到了 ModuleNotFoundError（用来解释为什么换掉它），那样写必然假红。
+    assert "ModuleNotFoundError: No module named" not in out, (
+        f"裸的 ModuleNotFoundError 又跑出来了：\n{out}")
+
+
+def test_import_is_not_broken_when_the_dependencies_are_present():
+    """对照组：依赖都在时，上面那个看门狗**不许**乱开火。
+
+    只测「缺依赖时报错对不对」不够 —— 一个**永远**抛异常的 import 也能过那条。
+    这条用同一个探针、只是不阻塞任何包，要求真的 import 成功。
+    """
+    proc = _run_import_probe("__this_package_does_not_exist_at_all__")
+    assert proc.returncode == 0, (
+        f"依赖都在，import 却失败了 —— 那个看门狗的条件写错了：\n"
+        f"{proc.stdout}{proc.stderr}")

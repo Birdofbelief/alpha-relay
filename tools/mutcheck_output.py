@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """输出安全护栏的**变异检查**：每条护栏都必须在坏代码上真红。
 
-    py tools/mutcheck_output.py
+    python tools/mutcheck_output.py
 
 ## 为什么这个脚本值得进仓库
 

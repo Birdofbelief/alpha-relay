@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""端到端演示：`py -m signalchain.demo`
+"""端到端演示：`python -m signalchain.demo`
 
 全程**零凭据、零网络、零券商**，用假行情和文件后端把整条链跑一遍，
 每一步都打印它在证明什么。

@@ -11,7 +11,7 @@
 
     读信号 → 判断能不能成交 → 记账 → 回写回执 → 回写持仓
 
-于是整条链路在 `py -m signalchain.demo` 下就能看到**完整闭环**，
+于是整条链路在 `python -m signalchain.demo` 下就能看到**完整闭环**，
 而且全程零凭据、零网络（配合 `FakeMarketData`）。
 
 ## 它刻意保留的三个真实语义

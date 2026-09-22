@@ -34,9 +34,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # 刻意不 `pip install .` —— 本项目的用法是「clone 下来直接跑」，
+      # 这里刻意不 `pip install .` —— 本 job 验的是「clone 下来直接跑」：
       # pyproject.toml 里的 pythonpath=["."] 已经让 `python -m pytest` 在仓库根可用。
       # 只装运行时依赖 + pytest。
+      # ★ 「装成包之后还能不能跑」由下面那个独立的 `installed` job 负责 ——
+      #   两件事必须分开，因为在仓库根跑会**盖住**装包才暴露的问题。
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -58,3 +60,40 @@ jobs:
       # 真正的「完整通过」只可能在本机跑出来。
       - name: 脱敏扫描（零凭据）
         run: python tools/sanitize_check.py --all
+
+  # ============================================================
+  # 把包**装起来**再验一遍
+  # ============================================================
+  # 这个 job 的存在理由是上面那个 job 验不到的一类问题：**只有在包外才暴露**。
+  # 实例（曾经真实存在）：内置示例策略放在仓库根的 `strategies/` 下。
+  # 在仓库根跑，cwd 会进 sys.path，于是那个顶层模块总能被找到 ——
+  # `pip install .` 成功、`import signalchain` 成功、上面那个 job 全绿，
+  # 而任何**装了包**的人一跑默认链路就是 `No module named 'strategies'`。
+  # ⇒ 所以这里要两件事同时成立：装成包，且**不在仓库目录里**跑。
+  installed:
+    name: 装成包之后还能跑
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 只在一个平台、一个版本上跑：这里验的是「包的形状对不对」，
+      # 与操作系统和 Python 版本无关，铺成矩阵只是把同一件事跑六遍。
+      - name: 装成包
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      # ★ `cd` 出去是关键，不是随手加的。
+      #   跑的是 README 里的**第一条命令** —— 于是这一步同时验了
+      #   「装完包，照着 README 敲，真的能看到演示跑起来」。
+      #   `--quiet` 只是让日志别刷屏；退出码由 run_demo 决定（失败非 0）。
+      - name: 从仓库外的目录跑演示
+        run: |
+          mkdir -p /tmp/elsewhere
+          cd /tmp/elsewhere
+          python -m signalchain.demo --quiet

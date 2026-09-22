@@ -62,11 +62,15 @@
 ## 二、扫描器怎么用
 
 ```bash
-py tools/sanitize_check.py            # 扫 git 已跟踪的文件（发布前跑这个）
-py tools/sanitize_check.py --all      # 扫工作区全部文件（含未跟踪）
-py tools/sanitize_check.py --staged   # 只扫暂存区（pre-commit 钩子用）
-py tools/sanitize_check.py --path X   # 扫指定文件（可在仓库外，用于复核别人给的产物）
+python tools/sanitize_check.py            # 扫 git 已跟踪的文件（发布前跑这个）
+python tools/sanitize_check.py --all      # 扫工作区全部文件（含未跟踪）
+python tools/sanitize_check.py --staged   # 只扫暂存区（pre-commit 钩子用）
+python tools/sanitize_check.py --path X   # 扫指定文件（可在仓库外，用于复核别人给的产物）
 ```
+
+> **Windows 用户**：上面写的 `python` 是 macOS / Linux 上的通用写法；若你的
+> `python` 指向微软商店的占位程序（执行无输出），把它换成 `py`。
+> 见 README「快速上手」里那段说明。
 
 退出码：`0` 干净 / `1` 有命中 / `2` **本次结果无效**（见第五节）。
 
@@ -129,7 +133,7 @@ py tools/sanitize_check.py --path X   # 扫指定文件（可在仓库外，用�
 ```bash
 # 1) 从你自己的私有策略源里提取「不该出现在公开仓库」的字面量。
 #    把 <私有策略源> 换成你本地的真实路径 —— 注意：**别把它写进任何入库的文件里**。
-py - <<'PY'
+python - <<'PY'
 import re, pathlib
 src = pathlib.Path(r"<私有策略源>").read_text(encoding="utf-8")
 # 例：抓标的池里的 6 位代码
@@ -141,7 +145,7 @@ print(f"写入 {len(codes)} 条 → {out}")
 PY
 
 # 2) 立刻验证它真的在工作（见下「验证黑名单不是摆设」）
-py tools/sanitize_check.py --all
+python tools/sanitize_check.py --all
 ```
 
 > ★ **不要用 `sed`/`awk` 之外的 shell 展开往这个文件写内容**。用哑引号 heredoc
@@ -154,7 +158,7 @@ py tools/sanitize_check.py --all
 
 ```bash
 # 临时指向一个含已知字符串的文件，确认命中（退出码应为 1）
-py tools/sanitize_check.py --path <一个含该字符串的文件>; echo "退出码=$?"
+python tools/sanitize_check.py --path <一个含该字符串的文件>; echo "退出码=$?"
 ```
 
 **只测「干净输入 → 零命中」是不够的**：那既可能是「真的干净」，
@@ -255,8 +259,24 @@ ACME_INTERNAL_[A-Z]{2,}<TAB>内部标识
    干净输入不报，**脏输入必须报**。
 3. **本文件不能有 shebang 行。** 首行若是 `#!/usr/bin/env python`，
    Windows 的 `py` 启动器会去解析它，然后**零输出、退出码 49** 地直接死掉 ——
-   不报错，什么都不说。而 `py` 恰恰是本项目调 Python 的标准方式，
+   不报错，什么都不说。文档里当时一律写 `py tools/sanitize_check.py`，
    也就是说**按文档调用它的每一次都会是零输出**。
+
+### 2026-09-22 补：上面第 1 条在钩子里**复发了一次**，成因不同
+
+同一句话（「钩子报「发现凭据」，但真相是检查根本没做」）以第二种方式出现过：
+`.githooks/pre-commit` 当时把解释器写死成 `py`。在 PATH 里没有 `py` 的机器上
+（= 所有 macOS / Linux），`py: command not found` 之后钩子**照样往下走**，
+`$?` 拿到 127，于是把 127 当成「命中」并**指控提交者泄漏了凭据** ——
+受害者会去查自己的 diff，而不是查钩子。
+
+> 两种成因、一个症状：**失效路径长得和通过路径一样**。
+> 所以钩子现在：① 从 `py` / `python3` / `python` 里**挑**一个，且不是只看
+> 存在性 —— 要**试跑一次**（Windows 上 `python3` / `python` 常是微软商店的
+> 占位程序：`command -v` 命中、一执行就退出码 49、零输出）。
+> ② 三条失败路径各说各的话：「找不到解释器 ⇒ 这次检查**没做**」／
+> 「扫描器退出码 2 ⇒ 本次结果**无效**」／「其余非零 ⇒ **命中**」。
+> 三条都是 `exit 1`（fail-closed），但话不一样。
 
 ### 另有一条：构造 `Finding` 一律走 `Finding(...)`
 
@@ -301,7 +321,7 @@ SELF_EXEMPT = {"tools/sanitize_check.py"}   # ← 自身豁免的**范围**要�
    把**公开 API 的每一个名字**拿出来，对着私有那份**逐个问「这个名字是不是
    从它那儿继承来的」** —— 不只是策略文件，**docstring、示例、参数名、
    辅助数据的键名、配置项的键名**，全都是泄漏面。
-   做法：`grep -rn 'aux\[\|name\s*=\|参数名' signalchain/ docs/ strategies/`，
+   做法：`grep -rn 'aux\[\|name\s*=\|参数名' signalchain/ docs/ tools/ tests/`，
    把命中的每一个标识符拿去和私有策略源**对一遍**。
    **别用关键词清单做这一步** —— 第一节那个例子正是清单一条都没命中的那个。
    判据：**「这个名字能不能让读者推断出我在算什么？」** 能，就换掉。
@@ -309,9 +329,11 @@ SELF_EXEMPT = {"tools/sanitize_check.py"}   # ← 自身豁免的**范围**要�
    而 git 历史里的东西删不掉。**改过旧提交之后要重跑这一步**：
    `filter-branch` 之类的重写会造出一批新 hash，**每一条都要重新看**。
 2. 按第一节的表**逐项人工对照**一遍。
-3. 确认 `py -m pytest` 全绿（测试里含「零凭据仍能跑通」的可执行证明）。
+3. 确认 `python -m pytest` 全绿（测试里含「零凭据仍能跑通」的可执行证明）。
    **注意公开克隆里的条数会比本机少** —— 有几条测试带 `skipif`，
    条件正是「那份私有清单在不在」，它们在公开克隆里**必然跳过**。
    这不是测试被削弱，是**那几条本来就只对本机有意义**；
-   但要**自己知道少了哪几条**，别把「240 passed, 2 skipped」读成「全跑过了」。
+   但要**自己知道少了哪几条**，别把「292 passed, 2 skipped」读成「全跑过了」。
+   （这个数会随代码变，别照抄 —— 以你自己那次实测为准。README「跑测试」
+   一节记了它当初是怎么量出来的。）
 4. 确认 `git status` 干净、没有意外的未跟踪文件（两份清单都必须在忽略列表里）。

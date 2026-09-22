@@ -184,7 +184,28 @@ def _find_transport(module, path: Path) -> Transport:
 def _instantiate(explicit, path: Path) -> Transport:
     """把 `TRANSPORT = X` 那个 X 变成一个装得进去的对象。"""
     if isinstance(explicit, type) and issubclass(explicit, Transport):
-        return explicit()
+        try:
+            return explicit()
+        except TypeError as exc:
+            # ★ 这条路的默认结局原本是一个**裸的** TypeError：
+            #     MyObjectStorage.__init__() missing 2 required positional arguments…
+            #   它说的是 Python 语法，不是「你该改什么」—— 而读者此刻正站在
+            #   文档里写着「几十行就能接上」的那个扩展点上，最容易被劝退。
+            #   实测 2026-09-22：外部读者照着「写一个 Transport 子类」写，
+            #   后端构造要 endpoint/key，得到的就是上面那句，全文没有 `from_env`。
+            #   `from exc` 保留原始 traceback，没有藏掉任何信息。
+            raise TypeError(
+                f"{path}: `TRANSPORT = {explicit.__name__}` 要求这个类能"
+                f"**无参构造**，但它不是：{exc}\n"
+                f"★ 构造需要参数的后端，两种写法（选一个）：\n"
+                f"    ① 给它加一个零参的类方法，然后写\n"
+                f"         TRANSPORT = {explicit.__name__}.from_env\n"
+                f"       （方法名叫什么都行，先例是内置的 `GistTransport.from_env`）\n"
+                f"    ② 装配时直接把对象传进去：\n"
+                f"         build_chain(config, transport={explicit.__name__}(...))\n"
+                f"   两种都会检查拿到的东西是不是 Transport。"
+            ) from exc
+
     if callable(explicit):
         obj = explicit()
         if not isinstance(obj, Transport):

@@ -67,7 +67,7 @@ class MyStrategy(Strategy):
    就用 `ctx.try_history()` 拿 `None`。**一只标的取不到历史**和**本轮没有信号**
    长得一模一样，用裸 `except: pass` 盖住就成了一次静默漏判。
 
-**这一步的验收**：`py -m pytest` 里那组策略纯度绊线能过
+**这一步的验收**：`python -m pytest` 里那组策略纯度绊线能过
 （`tests/test_strategy_contract.py` 的做法可以照抄到你的仓库），
 并且离线重放那一天的输出与基线一致。
 

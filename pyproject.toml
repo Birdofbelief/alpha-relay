@@ -1,9 +1,17 @@
 # signal-chain
 #
-# 打包配置刻意保持最小：这个项目的使用方式是「clone 下来直接跑」——
-# 不再把 signal-chain 本身 pip install 成一个依赖，但它的**运行时依赖
-# （requests + pandas）仍然要你自己装**：
-#     py -m pip install requests pandas
+# 打包配置刻意保持最小。两条用法都要成立：
+#
+#   1. **clone 下来直接跑**（推荐，也是 README 写的第一条路）——
+#      运行时依赖 requests + pandas 自己装：`pip install requests pandas`
+#   2. `pip install .` —— 有人就是这么用的，所以这条路**必须真的能跑**。
+#
+# ★ 第 2 条曾经是坏的，而且**在本机永远复现不出来**：内置示例策略当时放在
+#   仓库根的 `strategies/` 下，从仓库根跑时 cwd 会进 sys.path，于是那个顶层
+#   模块总能被找到 —— 而 `pip install .` 之后，走到默认策略的每一步都是
+#   `ModuleNotFoundError: No module named 'strategies'`。
+#   现在 CI 里有一个独立的 job 专门盯这条（装成包 → **从仓库外的目录**跑演示）。
+#
 # 所以没有 entry_points、没有 console_scripts。
 [build-system]
 requires = ["setuptools>=68"]
@@ -38,10 +46,14 @@ calendar = ["akshare>=1.10"]
 dev = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
+# `signalchain*` 覆盖全部子包（marketdata / transport / strategies）。
+# ★ `signalchain/strategies/` 必须在里面：`load_strategy("demo")` 是**默认值**，
+#   缺了它装完包一跑就是 `No module named 'strategies'`。
+#   默认值必须在包里 —— 见 signalchain/strategies/__init__.py。
 include = ["signalchain*"]
 
 [tool.pytest.ini_options]
-# 让 `py -m pytest` 在仓库根直接跑得起来，不需要 pip install -e .
+# 让 `python -m pytest` 在仓库根直接跑得起来，不需要 pip install -e .
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"

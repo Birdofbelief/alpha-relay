@@ -9,13 +9,14 @@
   3. **自身出问题时必须大声。** 终端上「什么都没打印」和「检查通过了」
      长得一模一样 —— 本脚本在这上面连踩三次，见文件末尾的注释。
 
-★ **本文件不许有 shebang 行**（`#!...`）。原因见文件末尾。用 `py tools/sanitize_check.py`
-或 `py -m tools.sanitize_check` 调用。
+★ **本文件不许有 shebang 行**（`#!...`）。原因见文件末尾。用
+`python tools/sanitize_check.py` 或 `python -m tools.sanitize_check` 调用
+（Windows 上 `python` 若指向微软商店的占位程序，换成 `py` —— 见 README）。
 
 用法：
-    py tools/sanitize_check.py            # 扫描被 git 跟踪的文件（发布前跑这个）
-    py tools/sanitize_check.py --all      # 扫描工作区全部文件（含未跟踪）
-    py tools/sanitize_check.py --staged   # 只扫描暂存区（pre-commit 钩子用）
+    python tools/sanitize_check.py            # 扫描被 git 跟踪的文件（发布前跑这个）
+    python tools/sanitize_check.py --all      # 扫描工作区全部文件（含未跟踪）
+    python tools/sanitize_check.py --staged   # 只扫描暂存区（pre-commit 钩子用）
 
 退出码：0 = 干净；1 = 有命中；**2 = 结果无效**（扫描器自己出错 ——
 不是「通过」，也不是「命中」，别把 2 读成好消息）。
@@ -637,8 +638,11 @@ def main() -> int:
 #      这行 shebang，然后**零输出、退出码 49** 地直接死掉 —— 不是报错，
 #      是什么都不说。（`python.exe tools/sanitize_check.py` 与
 #      `py -X faulthandler ...` 都正常，所以极易被当成偶发。）
-#      这条是真·坑：`py` 是本项目调用 Python 的标准方式，也就是说
+#      这条是真·坑：当时文档与钩子一律写 `py tools/sanitize_check.py`
+#      （`py` 是 Windows 自带的启动器），也就是说
 #      **所有按文档方式调用它的记录，全是零输出。**
+#      → 现在文档一律写 `python tools/sanitize_check.py`（macOS/Linux 通用），
+#        Windows 用户按 README 换成 `py`；钩子自己挑解释器并试跑一次。
 #
 #   3. 默认模式依赖 `git ls-files`。仓库还没 `git init` 时它返回空表，
 #      脚本于是报「✅ 共 0 个文件，零命中」。这是最坏的一种：一个假绿灯，

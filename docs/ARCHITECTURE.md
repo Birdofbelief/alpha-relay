@@ -49,6 +49,9 @@ signalchain/
 │   ├── gist.py      GistTransport（对齐现网行为）
 │   └── null.py      NullTransport（dry-run，只打日志）
 │
+├── strategies/
+│   └── demo_basic.py  示例策略（**明确非实盘**，只证明框架与策略无关）
+│
 ├── gates.py         ★ 三个 fail-closed 闸门 + GateChain
 ├── strategy.py      ★ Strategy 基类 + StrategyContext + 仓库外策略加载
 ├── store.py         四个 channel 的读写门面（含回执索引、队列清理）
@@ -58,7 +61,6 @@ signalchain/
 ├── runner.py        ★ 调度、时间预算、失败上限、心跳严重度
 └── chain.py         装配（build_chain / build_file_chain）
 
-strategies/demo_basic.py      示例策略（**明确非实盘**，只证明框架与策略无关）
 tools/sanitize_check.py       脱敏门禁（装成 pre-commit 钩子，见 SANITIZATION.md）
 tests/                        含 golden 线格式、传输契约、端到端接缝测试
 ```

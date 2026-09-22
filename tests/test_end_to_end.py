@@ -267,7 +267,7 @@ def test_file_chain_needs_no_credentials(tmp_path, monkeypatch):
 
 
 def test_demo_entry_point_returns_zero(tmp_path):
-    """`py -m signalchain.demo` 的入口函数返回 0（可被 CI 断言）。"""
+    """`python -m signalchain.demo` 的入口函数返回 0（可被 CI 断言）。"""
     import signalchain.demo as demo
 
     assert demo.run_demo(keep=False, quiet=True) == 0
@@ -286,12 +286,19 @@ def test_documented_command_survives_a_non_utf8_console(tmp_path):
 
     ⇒ 所以这条必须**起子进程**，并且**显式摘掉 PYTHONUTF8 / PYTHONIOENCODING**。
     实测形状（2026-09-21，干净克隆、未修复前）：
-        `py -m signalchain.demo`（本机 Git Bash，或重定向到文件）
+        `python -m signalchain.demo`（本机 Git Bash，或重定向到文件）
         → UnicodeEncodeError: 'gbk' codec can't encode character '⇒' → 退出码 1
     详见 signalchain/demo.py 里 main() 顶部那段。
     """
-    # 优先用文档里写的那条命令本身（`py`），拿不到就退回当前解释器 ——
-    # 免得在没有 py 启动器的机器上整条跳过，让护栏变成摆设。
+    # 用哪个启动器**不是这条测试要测的东西** —— 被测的是「那个模块 + 非 UTF-8 控制台」。
+    # 所以取一个真能用的就行：优先 `py`，拿不到再退回当前解释器
+    # （免得在没有 py 的机器上整条跳过，让护栏变成摆设）。
+    #
+    # ★ 这里刻意**不**用 `python`：在 Windows 上 `python` 经常是微软商店的占位程序 ——
+    #   本机实测 `shutil.which("python")` 指到 `…\WindowsApps\python.EXE`，
+    #   执行它是**退出码 49 + 零输出**（静默失败），换上去这条会假红。
+    #   文档正文写 `python -m` 是因为它在 macOS / Linux 上才是通用写法，
+    #   README 的「快速上手」里另有一段说明 Windows 上该用 `py`。
     launcher = shutil.which("py") or sys.executable
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}

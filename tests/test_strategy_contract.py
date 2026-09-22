@@ -8,7 +8,8 @@
 「回放同一天的行情得不到同一个结果」—— 于是「那天为什么卖」永远只能靠猜。
 
 所以这里不靠自觉，用一道绊线：`decide` 执行期间，只要调用栈里出现
-`strategies/` 下的帧，就说明是**策略自己**在做 I/O，直接判失败。
+`strategies/` 目录下的帧（内置示例在 `signalchain/strategies/`），
+就说明是**策略自己**在做 I/O，直接判失败。
 （框架自己是可以做 I/O 的 —— 取行情、读缓存都是它的活。契约约束的是策略。）
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ from signalchain.strategy import (
     StrategyContext,
     load_strategy,
 )
-from strategies.demo_basic import DemoBasicStrategy
+from signalchain.strategies.demo_basic import DemoBasicStrategy
 
 from .conftest import CLEAN_CODES, FIXED_NOW
 
@@ -43,7 +44,9 @@ def _is_strategy_frame(frame) -> bool:
     取行情、读缓存都是框架的活，它们也做 I/O。
 
     两种策略代码，两种识别法：
-      - 内置示例：文件在 `strategies/` 目录下
+      - 内置示例：文件路径里有 `strategies/` 这一段目录（现在在包内，
+        `signalchain/strategies/`；它曾经在仓库根的 `strategies/` 下，
+        这条判据两次都成立，所以不用跟着搬）
       - **仓库外加载的**：`load_strategy` 把它注册成
         `signalchain_user_strategy_<stem>`，从模块全局名认
 
