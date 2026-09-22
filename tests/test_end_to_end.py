@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -312,3 +313,81 @@ def test_documented_command_survives_a_non_utf8_console(tmp_path):
         f"stdout={proc.stdout[-2000:]!r}\nstderr={proc.stderr[-2000:]!r}")
     assert proc.stdout.strip(), (
         "零输出 = 和「通过」无法区分。演示不许有安静的失效路径。")
+
+
+# ------------------------------------------------------------
+# 环境变量与这个入口：不许静默换策略
+# ------------------------------------------------------------
+# ★ 标的代码从 `CLEAN_CODES` 取，不随手写：我第一版随手敲了一个真实宽基代码，
+#   当场被 `test_sanitize_rules.py::test_whole_repo_passes_the_scanner` 拦下 ——
+#   它在作者自备的黑名单里。后来把它写进**注释**里说明这件事，**又**被拦了一次：
+#   扫描器看的是全文，注释不例外，而注释恰恰是最容易顺手抄进公开文档的地方。
+#   所以这里只留纪律、不留那个代码。纪律见 conftest 顶部。
+_PRIVATE_STRATEGY = f'''\
+# -*- coding: utf-8 -*-
+"""假装是用户放在仓库外的那份 alpha。"""
+from signalchain import Strategy
+
+
+class MyPrivateStrategy(Strategy):
+    name = "MY_PRIVATE"
+
+    def universe(self):
+        return [{CLEAN_CODES[0]!r}]
+
+    def decide(self, ctx):
+        return []
+'''
+
+
+def test_env_var_never_silently_swaps_the_strategy(tmp_path, monkeypatch, caplog):
+    """设了 `SC_STRATEGY_PATH` 的人走这个入口，**必须听得到**这次是谁在跑。
+
+    这个入口按设计不读环境变量（=「零凭据、零网络」承诺的来源），所以它不会
+    采纳那个路径。但**沉默**会骗人，实测 2026-09-22（设同一个环境变量）：
+
+        build_chain()       → MY_PRIVATE（采纳）
+        build_file_chain()  → demo_basic（内置示例，**且没有任何输出**）
+
+    于是「我设了环境变量」被读成「我的策略进来了」，接下来他会去怀疑策略、
+    怀疑框架 —— 而两条都不是问题所在。这正是 `Missing is not zero` 的形状。
+
+    断言两件事**同时**成立，缺一不可：
+      ① 有 warning 说清楚「本入口不读环境变量 / 本次跑的是 demo_basic / 是哪个路径」；
+      ② 链的形状**一点没变** —— 只出声，不采纳。
+    ②是关键：把 warning 顺手换成「那就采纳吧」也能让 ① 变绿，但那是另一个东西 ——
+    采纳之后用户环境里的 `SC_TRANSPORT` / `SC_ROLE` 会跟着渗进来，
+    「跑通即说明链路完整」就不成立了。
+    """
+    priv = tmp_path / "my_private.py"
+    priv.write_text(_PRIVATE_STRATEGY, encoding="utf-8")
+    monkeypatch.setenv("SC_STRATEGY_PATH", str(priv))
+
+    with caplog.at_level(logging.WARNING):
+        chain = _chain(tmp_path)
+
+    assert chain.strategy.name == "demo_basic", (
+        f"这个入口本该只认显式传入的 strategy=，却拿到了 "
+        f"{chain.strategy.name!r} —— 「零凭据」承诺就是靠「不读环境变量」成立的")
+
+    said = [r.getMessage() for r in caplog.records]
+    hit = [m for m in said if "SC_STRATEGY_PATH" in m]
+    assert hit, (
+        "设了 SC_STRATEGY_PATH 却一声不吭：用户会把「我设了环境变量」读成"
+        "「我的策略进来了」，然后去查策略或框架。\n"
+        f"本次日志：{said}")
+    assert "不读环境变量" in hit[0] and "demo_basic" in hit[0], (
+        f"这条 warning 没把「谁在跑、为什么不是你的策略」说全：{hit[0]!r}")
+    assert str(priv) in hit[0], (
+        f"没报出用户设的那个路径，他会去翻自己到底写错了哪 —— 实测报错指向一个"
+        f"用户没写过的路径比不报更坏：{hit[0]!r}")
+
+    # ③ 对照：环境干净时**不许出声**。一条会在正常用法下也响的 warning，
+    #    结局是所有人学会忽略它 —— 那等于又变回静默。
+    caplog.clear()
+    monkeypatch.delenv("SC_STRATEGY_PATH")
+    with caplog.at_level(logging.WARNING):
+        _chain(tmp_path)
+    noise = [m for m in (r.getMessage() for r in caplog.records)
+             if "SC_STRATEGY_PATH" in m]
+    assert not noise, f"环境里没有这个变量，却警告了：{noise}"

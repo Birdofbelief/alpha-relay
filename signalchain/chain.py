@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -241,10 +242,33 @@ def build_file_chain(
     传 `executor=` 可以换掉那个纸面执行端，其余一律不变 ——
     这是「接自己的券商执行端」最短的一条验证路径：先用假行情把执行端接上，
     确认它真的被调到了、回执真的写回来了，再去接真行情。
+
+    ★ 本入口**不读环境变量** —— 它直接造 `Config`，不走 `Config.from_env()`，
+    这正是「零凭据」承诺的一部分（跟环境里配没配账号无关）。代价是它有一个
+    静默面：设了 `SC_STRATEGY_PATH` 又没显式传 `strategy=` 时，跑的是内置示例
+    策略。那一种情况会打一条 warning 把「这次谁在跑」说清楚 ——
+    **只警告，不采纳**（采纳了它就不再是零凭据入口）。
     """
     config = Config(role="producer", transport="file",
                     runtime_dir=Path(runtime_dir))
     config.ensure_dirs()
+
+    # ★ 本入口不读环境变量（见 docstring），但**不能沉默**。
+    #   实测 2026-09-22，同样设 SC_STRATEGY_PATH 指向仓库外的私有策略：
+    #       build_chain()       → MY_PRIVATE（环境变量被采纳）
+    #       build_file_chain()  → demo_basic（跑的是内置示例，且没有任何输出）
+    #   于是「我设了环境变量」被读成「我的策略进来了」，接着他会去怀疑策略或
+    #   怀疑框架 —— 而两条都不是问题所在。这条 warning 就是为那一种情况准备的：
+    #   只在**设了环境变量、又没显式传 strategy=** 时触发，说清楚这次是谁在跑。
+    #   刻意不采纳那个路径：采纳了它就不再是「零凭据」入口了（用户的环境里
+    #   SC_TRANSPORT / SC_ROLE 会跟着渗进来，那就不是「跑通即链路完整」了）。
+    if strategy is None and os.environ.get("SC_STRATEGY_PATH"):
+        log.warning(
+            "! SC_STRATEGY_PATH 已设置（%s），但**本入口不读环境变量** —— "
+            "build_file_chain 是零凭据入口，只认显式传入的 strategy=。"
+            "本次跑的是内置示例策略 demo_basic。要跑你自己的策略就传参："
+            'build_file_chain(runtime_dir, strategy="../你的策略.py")',
+            os.environ["SC_STRATEGY_PATH"])
 
     strategy = strategy or load_strategy("demo")
     if isinstance(strategy, str):

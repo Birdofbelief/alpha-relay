@@ -287,6 +287,10 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
 
     emit(f"\n{BANNER}")
     emit("  闭环完成：策略 → 闸门 → 信号 → 执行 → 回执 → 持仓回流")
+    emit("")
+    emit("  接着换你自己的策略（文件放**仓库外**，路径按你的运行目录解析）：")
+    emit('    chain = build_file_chain("./runtime", strategy="../my_private.py")')
+    emit("  换投递后端、换执行端：见 README 的「换成你自己的…」两节。")
     emit(BANNER)
     return 0
 
