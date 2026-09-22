@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg)](https://www.python.org/)
-[![tests](https://github.com/Birdofbelief/signal-chain/actions/workflows/tests.yml/badge.svg)](https://github.com/Birdofbelief/signal-chain/actions/workflows/tests.yml)
+[![tests](https://github.com/Birdofbelief/alpha-relay/actions/workflows/tests.yml/badge.svg)](https://github.com/Birdofbelief/alpha-relay/actions/workflows/tests.yml)
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-requests%20%2B%20pandas-informational.svg)](pyproject.toml)
 [![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
 
