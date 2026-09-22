@@ -7,6 +7,10 @@
 [![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
 
 > **中文** | [English](README.en.md)
+>
+> A pluggable Python framework for **quant trading** signal delivery: your strategy stays a
+> pure `decide(ctx)`, while the framework owns risk gates, delivery, retries, receipts,
+> position reconciliation, scheduling and heartbeats. Runs fully offline, zero credentials.
 
 **把「策略」和「把策略的信号安全送到券商」拆开的框架。**
 
