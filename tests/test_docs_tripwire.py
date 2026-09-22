@@ -274,13 +274,19 @@ _COMPONENT_RE = re.compile(
 _HYPOTHETICAL = {"MyStrategy", "MyExecutor"}
 
 #: 要检查的文档。代码块的 ASCII 图也算 —— 这正是它被写出来的理由。
-_DOC_FILES = ("README.md", "docs/ARCHITECTURE.md", "docs/DESIGN_NOTES.md",
-              "docs/DESIGN_NOTES.en.md", "docs/EXECUTOR_GUIDE.md",
-              "docs/WIRE_CONTRACT.md", "docs/SANITIZATION.md",
-              "docs/MIGRATION.md")
+_DOC_FILES = ("README.md", "README.en.md", "docs/ARCHITECTURE.md",
+              "docs/DESIGN_NOTES.md", "docs/DESIGN_NOTES.en.md",
+              "docs/EXECUTOR_GUIDE.md", "docs/WIRE_CONTRACT.md",
+              "docs/SANITIZATION.md", "docs/MIGRATION.md")
 
 #: (原文, 译本) —— 下面那条测试要求同一条目里两边提到的构件名**完全一致**。
-_TRANSLATION_PAIRS = (("docs/DESIGN_NOTES.md", "docs/DESIGN_NOTES.en.md"),)
+#:
+#: ⚠️ 说清它能挡什么：**只挡「改了标识符集合」**。把两个闸门名字**对调**
+#: （名字都对、归属反了）这种**重绑定**它挡不住 —— 集合相等即通过。
+#: README 那对尤其如此（两个版本都点名了三个内置传输，所以「哪个是默认后端」
+#: 被译反时集合照样相等）。**散文里的事实性描述仍然只有人看得见。**
+_TRANSLATION_PAIRS = (("docs/DESIGN_NOTES.md", "docs/DESIGN_NOTES.en.md"),
+                      ("README.md", "README.en.md"))
 
 
 def _repo_root() -> pathlib.Path:
@@ -323,12 +329,12 @@ def _documented_components() -> dict[str, list[str]]:
 
 
 def test_every_doc_import_line_resolves():
-    """★ 8 个文档文件里**每一行** `from X import a, b` 都要能解析。
+    """★ `_DOC_FILES` 里**每一份**文档的**每一行** `from X import a, b` 都要能解析。
 
     ★ 为什么值得单独一条：本文件开头的 docstring 从一开始就写着
     「**逐个 import** 文档里 `from X import a, b` 形式的每一行」，而实现
     只把 `signalchain.__doc__` 喂了进去 —— 真正的示例代码住在
-    `_DOC_FILES` 那 8 个文件里，一行都没被检查过。
+    `_DOC_FILES` 那些文件里，一行都没被检查过。
 
     这个缺口有实际代价：README 的「换成你自己的执行端」一节写着
 
