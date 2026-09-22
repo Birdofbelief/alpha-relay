@@ -270,8 +270,12 @@ chain = build_file_chain("./runtime", strategy="../my_private.py")
 
 ★ 路径按**你的运行目录**解析（不是相对仓库根）。所以上面写 `../`：
 你多半在仓库根目录跑脚本，`./my_private.py` 恰好等于**把 alpha 放进仓库里** ——
-正好是这条路要避免的事。（`.gitignore` 兜了一层 `strategies/private*`，
-但**别靠它**：认的是名字不是位置，真正的保障是文件根本不在仓库里。）
+正好是这条路要避免的事。（`.gitignore` 里那三行 `strategies/…` **兜不住这种情况**：
+规则**含斜杠 ⇒ 被 git 锚定到 `.gitignore` 所在目录**，于是它只匹配**仓库根 `strategies/`
+目录下**的文件 —— 认的是**位置**，名字只是附带条件；而仓库里压根没有顶层 `strategies/` 目录。
+你真会放 alpha 的两个地方（仓库根的 `./my_private.py`、以及 `signalchain/strategies/` 下）
+**都不在覆盖范围里**：`git check-ignore -v ./my_private.py` 会告诉你 NOT IGNORED。
+真正的保障是文件根本不在仓库里。）
 
 或设环境变量 `SC_STRATEGY_PATH` —— 注意它**只对 `build_chain()` 生效**：
 `build_file_chain()` 刻意只认显式传进来的 `strategy=`，不看环境变量。
@@ -447,7 +451,8 @@ chain = build_chain(config, strategy="./my_private.py", executor=executor)
     trade_signals.json  (953 字节)
 ```
 
-完整输出有 182 行，每次跑都会打印 —— 直接跑一遍最快。`--keep` 可以保留运行目录。
+完整输出有 186 行（**口径**：stdout 174 + stderr 12，两条流分开数 —— 只数 stdout 会得到 174），
+每次跑都会打印 —— 直接跑一遍最快。`--keep` 可以保留运行目录。
 
 ### 输出与编码（中文 Windows 用户看这一节）
 
