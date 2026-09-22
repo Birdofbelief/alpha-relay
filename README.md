@@ -272,7 +272,8 @@ chain = build_file_chain("./runtime", strategy="../my_private.py")
 你多半在仓库根目录跑脚本，`./my_private.py` 恰好等于**把 alpha 放进仓库里** ——
 正好是这条路要避免的事。（`.gitignore` 里那三行 `strategies/…` **兜不住这种情况**：
 规则**含斜杠 ⇒ 被 git 锚定到 `.gitignore` 所在目录**，于是它只匹配**仓库根 `strategies/`
-目录下**的文件 —— 认的是**位置**，名字只是附带条件；而仓库里压根没有顶层 `strategies/` 目录。
+目录及其下任意层级**（规则命中的若是个目录，整棵子树一起被排除）—— 认的是**位置**，
+名字只是附带条件；而仓库里压根没有顶层 `strategies/` 目录。
 你真会放 alpha 的两个地方（仓库根的 `./my_private.py`、以及 `signalchain/strategies/` 下）
 **都不在覆盖范围里**：`git check-ignore -v ./my_private.py` 会告诉你 NOT IGNORED。
 真正的保障是文件根本不在仓库里。）
