@@ -208,38 +208,3 @@ def _num(key: str, default: float) -> float:
     except ValueError:
         log.warning("环境变量 %s=%r 不是数字，改用默认值 %s", key, raw, default)
         return default
-
-
-DOTENV_EXAMPLE = """\
-# alpha-relay 配置示例。复制成 .env 后按需修改。
-# ! .env 已被 .gitignore 挡住 —— 但**仍然不要把真实凭据写进任何会被提交的文件**。
-
-# 本进程扮演哪一端：producer（产生信号）/ executor（执行信号）
-SC_ROLE=producer
-
-# 投递后端：file（本地文件，零凭据）/ gist（GitHub Gist）/ null（干跑）
-# ★ 也可以填一个**仓库外** .py 文件的路径 —— 里面写你自己的 Transport 子类
-#   （对象存储 / 自建 HTTP / 网络盘都行）。取值写错会**报错**，不会悄悄退回 file。
-# SC_TRANSPORT=../my_private_objectstore.py
-SC_TRANSPORT=file
-
-# 运行态目录：历史缓存、状态、channel 文件、日志都放这里
-SC_RUNTIME_DIR=./runtime
-
-# 从**仓库外**加载你自己的私有策略（这样它永远不会进版本库）
-# SC_STRATEGY_PATH=../my_private_strategy.py
-
-# ---- 仅 gist 后端需要 ----
-# SC_GIST_ID=
-# SC_GITHUB_TOKEN=
-
-# ---- 仅 ServerChan 通知需要 ----
-# SC_SERVERCHAN_KEY=
-
-# ---- 可选微调 ----
-SC_HTTP_TIMEOUT=15
-SC_SNAPSHOT_TTL=300
-SC_MAX_STALE_DAYS=1
-SC_CATCHUP_MINUTES=30
-SC_TASK_FAIL_LIMIT=3
-"""
