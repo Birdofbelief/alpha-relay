@@ -13,6 +13,18 @@ execution side — reliably — and that it actually got there.**
 
 **It does not invent your strategy, and it does not place your orders.**
 
+> **In plain words:** a pluggable **signal-delivery layer** between your strategy and your
+> broker executor — one wire format, fail-closed gates, retries, execution receipts,
+> position reconciliation.
+
+**Status:** `0.2.0` (unreleased) · 367 tests · Python 3.10+ ·
+the only executor here is `PaperExecutor` (**no broker client**) · **not yet running in production**.
+If you need a backtester, a market-data source, a broker client or a managed cloud host,
+this project does not provide it — it owns only the middle stretch.
+
+- **For you if** you already have a strategy and are wiring "strategy → broker executor".
+- **Not for you if** you want a backtester, a data source, a broker client or cloud hosting.
+
 Between "the strategy computed a signal" and "the broker placed an order" there is a
 stretch of plumbing that **fails silently, not loudly**: bad data, dropped signals,
 retries that duplicate orders, fills nobody recorded, positions that no longer match.
@@ -36,6 +48,26 @@ Three legs, three owners:
 (see [the cross-machine section](#across-machines-how-a-signal-gets-from-producer-to-executor)).
 It does **not** provide the cloud, and it does not require one. The invariant is:
 **your strategy never enters this public repo, and never enters the broker platform.**
+
+### What it looks like: the smallest strategy that runs
+
+```python
+from signalchain import Strategy, build_file_chain
+
+class MyStrategy(Strategy):
+    name = "my_strategy"
+    def universe(self):
+        return ["510050.XSHG"]
+    def decide(self, ctx):
+        return [ctx.signal("510050.XSHG", "buy", amount=100)]
+
+chain = build_file_chain("./runtime", strategy=MyStrategy())
+result, fills = chain.step()
+```
+
+`decide(ctx)` is a pure function: same input, same output — so it can be replayed and
+verified offline. Real strategies live **outside this repo**; the framework loads them
+from a path, so the public repo only ever contains examples.
 
 ### What it owns / what it does not
 
