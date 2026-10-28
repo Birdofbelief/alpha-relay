@@ -79,6 +79,30 @@ MUTATIONS = [
      "",
      f"{LIMITS}::test_buy_at_limit_up_is_not_filled", True),
 
+    ("S6 直接构造的信号丢锚", "signalchain/runner.py",
+     "            self._anchor_signals(signals, planned_at)\n",
+     "",
+     f"{RUNNER}::test_a_directly_constructed_signal_is_anchored_too", True),
+
+    ("S7 派发时丢掉计划时刻", "signalchain/runner.py",
+     '        if accepts_kw or "planned_at" in params:\n'
+     '            kwargs["planned_at"] = planned_at\n',
+     "",
+     f"{RUNNER}::test_a_subclassed_run_round_still_receives_the_planned_time", True),
+
+    ("S8 缺 id 的信号又凭空补一个", "signalchain/models.py",
+     '        if not item.get("id"):\n'
+     "            # ★ 缺 id 不能「补一个现在的时间」。那样每一次重读都会得到**不同的**\n"
+     "            #   幂等键，重试就变成重复下单 —— 而且没有任何报错。\n"
+     "            #   `id` 是线格式的必需项（`Signal.to_dict()` 一定写它），\n"
+     "            #   缺了就说明这一条不是本框架写出来的，或上游把它改坏了。\n"
+     "            raise WireFormatError(\n"
+     '                f"信号队列第 {position} 条没有 id"\n'
+     "                f\"（code={item.get('code')!r}，action={item.get('action')!r}）\"\n"
+     '                " —— id 是幂等键，缺了它无法安全执行")\n',
+     "",
+     f"{RUNNER}::test_a_signal_without_an_id_raises_instead_of_inventing_one", True),
+
     ("S5 保鲜期开关被忽略", "signalchain/runner.py",
      "        max_age = self.config.max_position_stale_days\n"
      "        if not max_age:\n"

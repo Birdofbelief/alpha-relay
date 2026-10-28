@@ -102,7 +102,9 @@ class TradingCalendar:
 
         if self._in_flight is not None and self._in_flight.is_alive():
             raise CalendarError(
-                "上一次日历加载仍未返回，本次放弃（不叠加新线程）")
+                "上一次日历加载仍未返回，本次放弃（不叠加新线程）。"
+                "若每次都报这一句，说明那次加载永远不会回来 —— "
+                "**重启进程**才能恢复日历刷新（旧缓存仍可用，但不会更新）")
 
         box: dict[str, object] = {}
 

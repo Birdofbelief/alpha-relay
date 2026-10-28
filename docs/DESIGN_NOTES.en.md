@@ -118,6 +118,17 @@ behaviour.
 > ★ Generalized: **any dimension of an idempotency key that can change on retry has
 > already broken idempotency** — even if the changing dimension looks "more truthful."
 
+This does **not** rely on the strategy author's discipline. `Signal` is publicly exported,
+so a strategy can construct one directly; the docs only *recommend* `ctx.signal()`. The
+scheduler therefore anchors uniformly before emitting: any signal **not given an explicit
+id** gets this round's planned time as its anchor, and its id is recomputed.
+
+For the same reason, task dispatch checks the **signature** to decide whether to pass the
+planned time, rather than the object's identity (`fn.__func__ is Runner.run_round`).
+Otherwise anyone who subclasses `Runner` and overrides `run_round` silently loses
+`planned_at`, and the anchor falls back to the actual time. **Overriding a method is
+normal; it must not cost a safety property.**
+
 ### Why retries are safe (this one isn't obvious)
 
 `GistTransport._request` retries by **resending the exact same body, and never re-GETs

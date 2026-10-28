@@ -37,6 +37,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -237,6 +238,7 @@ class Runner:
             ctx = self.build_context(now, planned_at=planned_at)
             signals = list(self.strategy.decide(ctx) or [])
             result.emitted = len(signals)
+            self._anchor_signals(signals, planned_at)
 
             allowed, vetoes = self.gates.apply(signals, ctx.data)
             result.allowed, result.vetoes = len(allowed), vetoes
@@ -579,10 +581,44 @@ class Runner:
 
         默认任务（`run_round`）需要额外拿到**任务名**与**计划时刻**；
         自定义任务保持公开契约 `fn(now)`，不受影响。
+
+        ★ **按签名判断，不按对象身份判断。** 原来写的是
+        `fn.__func__ is Runner.run_round` —— 只要有人**继承** Runner 并重写
+        `run_round`，这个判断就为假，`planned_at` 悄悄传不进去，
+        信号的幂等锚退回实际时刻，重试又开始换 id。
+        「重写一个方法」是再正常不过的事，不能因为它就丢掉安全属性。
         """
-        if getattr(fn, "__func__", None) is Runner.run_round:
-            return fn(now, task=name, planned_at=planned_at)
-        return fn(now)
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):      # 某些内建/C 可调用对象取不到签名
+            return fn(now)
+        accepts_kw = any(p.kind is p.VAR_KEYWORD for p in params.values())
+        kwargs = {}
+        if accepts_kw or "task" in params:
+            kwargs["task"] = name
+        if accepts_kw or "planned_at" in params:
+            kwargs["planned_at"] = planned_at
+        return fn(now, **kwargs)
+
+    @staticmethod
+    def _anchor_signals(signals, planned_at: datetime | None) -> None:
+        """给**没有显式 id** 的信号补上「计划时刻」的锚，并重算 `sig_id`。
+
+        为什么必须在这一层做：`ctx.signal()` 会带锚，但策略也可以直接
+        `Signal(...)` 构造（它是公开导出的；文档只是建议走 `ctx.signal()`）。
+        只要有一条漏网，它就会在重试时换 id ⇒ 执行端去重失效 ⇒ 重复下单。
+
+        显式 id（构造时传了 `sig_id=`，或从线格式读到了 `id`）**绝不改写** ——
+        那是别人定的幂等键，改写等于把别人的去重也一起废掉。
+        """
+        if planned_at is None:
+            return
+        anchor = planned_at.strftime("%Y%m%d%H%M%S")
+        for sig in signals:
+            if sig.explicit_id or sig.anchor:
+                continue
+            sig.anchor = anchor
+            sig.sig_id = sig.make_id()
 
     def _record_failure(self, day: str, name: str, message: str,
                         exc_info: bool = False) -> None:

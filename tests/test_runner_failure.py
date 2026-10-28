@@ -21,13 +21,15 @@
 """
 from __future__ import annotations
 
+import pytest
 from datetime import date, datetime
 
 from signalchain.calendar import weekday_calendar
 from signalchain.chain import build_chain
 from signalchain.config import Config
 from signalchain.marketdata.fake import FakeMarketData
-from signalchain.models import ACTION_BUY, PositionSnapshot
+from signalchain.models import (ACTION_BUY, PositionSnapshot, Signal,
+                                payload_to_signals)
 from signalchain.strategy import Strategy
 from signalchain.transport.file import FileTransport
 
@@ -142,9 +144,9 @@ def test_the_round_result_is_still_returned_on_failure(tmp_path):
 # 信号 id 锚在计划时刻
 # ------------------------------------------------------------
 
-def _emit_chain(tmp_path):
+def _emit_chain(tmp_path, strategy=None):
     """带执行端、且持仓已对账 —— 否则闸门会把买入拦下，测不到 id。"""
-    chain = _chain(tmp_path, _Emit(), with_executor=True)
+    chain = _chain(tmp_path, strategy or _Emit(), with_executor=True)
     chain.executor.stores.positions.write(PositionSnapshot(updated_at=FIXED_NOW))
     return chain
 
@@ -245,3 +247,117 @@ def test_a_snapshot_without_a_timestamp_is_stale_only_when_the_switch_is_on(tmp_
     off = _chain(tmp_path / "off", _Quiet(), with_executor=True).runner
     off_ctx = off.build_context(FIXED_NOW)
     assert off._positions_staleness(off_ctx, bare) == ""       # noqa: SLF001
+
+
+# ------------------------------------------------------------
+# 锚不依赖「策略作者用了 ctx.signal()」
+# ------------------------------------------------------------
+class _RawEmit(Strategy):
+    """直接构造 `Signal(...)` —— 公开 API，文档只是建议用 `ctx.signal()`。"""
+
+    name = "raw"
+
+    def universe(self):
+        return list(CLEAN_CODES)
+
+    def decide(self, ctx):
+        return [Signal(code=CLEAN_CODES[0], action=ACTION_BUY, amount=100,
+                       created_at=ctx.now)]
+
+
+def test_a_directly_constructed_signal_is_anchored_too(tmp_path):
+    """★ 这条堵的是「绕开 `ctx.signal()` 就丢锚」的漏洞。
+
+    `Signal` 是公开导出的，策略可以自己 `Signal(...)`。如果调度器只信
+    `ctx.signal()` 带进来的锚，这种策略在重试时会换 id ⇒ 执行端去重失效。
+    把关口放在「所有策略出口都过一遍这里」，比要求每个策略作者自觉可靠。
+    """
+    runner = _emit_chain(tmp_path, _RawEmit()).runner
+
+    runner.run_round(PLANNED, task=TASK, planned_at=PLANNED)
+    runner.run_round(datetime(2026, 9, 18, 14, 46, 10), task=TASK, planned_at=PLANNED)
+
+    signals = runner.stores.signals.signals()
+    assert len(signals) == 1
+    assert signals[0].sig_id.startswith("20260918144500_")
+
+
+def test_an_explicitly_given_id_is_never_rewritten(tmp_path):
+    """别人指定过的 id 是别人定的幂等键 —— 调度器不许改写。"""
+    class _Fixed(Strategy):
+        name = "fixed"
+
+        def universe(self):
+            return list(CLEAN_CODES)
+
+        def decide(self, ctx):
+            return [Signal(code=CLEAN_CODES[0], action=ACTION_BUY, amount=100,
+                           created_at=ctx.now, sig_id="别人给的-id")]
+
+    runner = _emit_chain(tmp_path, _Fixed()).runner
+    runner.run_round(PLANNED, task=TASK, planned_at=PLANNED)
+
+    assert runner.stores.signals.signals()[0].sig_id == "别人给的-id"
+
+
+# ------------------------------------------------------------
+# 派发：按签名判断，不按对象身份
+# ------------------------------------------------------------
+def test_a_subclassed_run_round_still_receives_the_planned_time(tmp_path):
+    """★ 继承 Runner 并重写 `run_round` 是很正常的事。
+
+    原来的身份判断（`fn.__func__ is Runner.run_round`）一遇到重写就为假，
+    `planned_at` 悄悄丢掉，幂等锚退回实际时刻 —— 又变成重复下单。
+    """
+    from signalchain.runner import Runner
+
+    seen: list = []
+
+    class _Sub(Runner):
+        def run_round(self, now, task="manual", planned_at=None):
+            seen.append(planned_at)
+            return super().run_round(now, task=task, planned_at=planned_at)
+
+    config = Config(runtime_dir=tmp_path / "rt")
+    runner = _Sub(config, _Quiet(), FakeMarketData(list(CLEAN_CODES)),
+                  FileTransport(tmp_path / "ch"),
+                  weekday_calendar(date(2026, 1, 1), date(2026, 12, 31)),
+                  schedule=SCHEDULE)
+    runner.register(TASK, runner.run_round)
+
+    runner.run_due(FIXED_NOW)
+
+    assert seen == [PLANNED]
+
+
+def test_a_plain_custom_task_is_still_called_with_only_now(tmp_path):
+    """自定义任务保持 `fn(now)` 的公开契约，不被塞参数。"""
+    runner = _chain(tmp_path, _Quiet()).runner
+    got: list = []
+
+    def task(now):
+        got.append(now)
+        return None
+
+    runner._dispatch(TASK, task, FIXED_NOW, PLANNED)       # noqa: SLF001
+
+    assert got == [FIXED_NOW]
+
+
+# ------------------------------------------------------------
+# 缺 id 的信号：不能再被凭空补一个「现在」
+# ------------------------------------------------------------
+def test_a_signal_without_an_id_raises_instead_of_inventing_one():
+    from signalchain.models import WireFormatError
+
+    with pytest.raises(WireFormatError) as info:
+        payload_to_signals([{"code": CLEAN_CODES[0], "action": ACTION_BUY,
+                             "amount": 100}])
+
+    assert "id" in str(info.value)
+
+
+def test_a_signal_with_an_id_still_round_trips():
+    sig = Signal(code=CLEAN_CODES[0], action=ACTION_BUY, created_at=FIXED_NOW)
+    back = payload_to_signals([sig.to_dict()])[0]
+    assert back.sig_id == sig.sig_id

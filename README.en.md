@@ -551,7 +551,7 @@ Pick by scenario:
 ## Running the tests
 
 ```bash
-python -m pytest              # 346 tests, fully offline, no credentials needed
+python -m pytest              # 363 tests, fully offline, no credentials needed
 ```
 
 The same suite runs in CI (Ubuntu + Windows × Python 3.10 / 3.12 / 3.13, see
@@ -562,10 +562,10 @@ CI also runs the sanitization scan a second time: the local pre-commit hook depe
 `core.hooksPath`, which is **local configuration and does not travel with a clone** — meaning a fresh
 clone is unguarded by default, so the server side adds a check.
 
-> The **346** above is hand-written and will drift. **Trust the measurement**: run
+> The **363** above is hand-written and will drift. **Trust the measurement**: run
 > `python -m pytest` and look at the exit code (0 = all passed).
 >
-> ⚠️ **In a public clone it is `344 passed, 2 skipped`** — two tests carry a `skipif` whose condition
+> ⚠️ **In a public clone it is `361 passed, 2 skipped`** — two tests carry a `skipif` whose condition
 > is exactly "is the author's private fingerprint list present", so they **must** skip in a public
 > clone. They only mean something on the author's machine (they check that the list is
 > self-consistent and that this repository does not trip it), so this is by design rather than a
@@ -659,7 +659,7 @@ Stating clearly what this project **is right now** matters more than stating wha
 |---|---|
 | **Where the design comes from** | the layering, the gate directions and the single-writer convention come from a **live trading system** (single-file form, producer and executor separated). The "why"s in the docs are not deduced on paper. |
 | **The state of this repo** | ⚠️ **It was extracted from that system and has not replaced it in production.** In other words: **the design has been battle-tested; this extracted artifact has not run in production.** Treat it as a usable framework assembled but not yet field-proven. |
-| **What the tests prove** | 346 tests, fully offline (344 + 2 skipped in a public clone). They verify the **chain's correctness** — idempotency, gate directions, wire format, ownership, pluggability at both ends, output that does not crash. They **do not verify the returns of any strategy**. |
+| **What the tests prove** | 363 tests, fully offline (361 + 2 skipped in a public clone). They verify the **chain's correctness** — idempotency, gate directions, wire format, ownership, pluggability at both ends, output that does not crash. They **do not verify the returns of any strategy**. |
 | **What is missing** | no broker client — the repo only ships `PaperExecutor`, a **no-broker placeholder**; you wire up the real executor yourself. No web UI, no database. |
 | **Delivery backends** | three **examples** built in: `file` / `gist` / `null`. On one machine, `file` is enough; for cross-machine, see the [section above](#across-machines-how-a-signal-gets-from-producer-to-executor). **Any other store (object storage, self-hosted HTTP, network drive) is yours to implement** — every broker terminal can read a different set of stores, and no framework can decide that for you. When you are done, **nothing in this repo changes**: the backend class lives outside it and the config points at a path (`SC_TRANSPORT=../x.py`), or you pass `build_chain(transport=...)` at assembly time. **A wrong name raises instead of quietly falling back to `file`** — that would put the two ends on two different stores while both logs reported success. |
 | **No backtesting** | this framework is **orthogonal** to backtesting, not competing with it. Write your judgement as the pure function `decide(ctx)`: for backtests, write a thin adapter that calls it from backtrader / qlib; in production, this framework calls **the same function**. **The strategy body is never written twice — what is written twice is the adapter.** There is no backtest engine here and there will not be one. |

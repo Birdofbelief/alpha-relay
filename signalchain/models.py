@@ -10,9 +10,12 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Iterable
+
+log = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # channel 名。同时是传输后端里的「文件名」，改了就是破坏兼容。
@@ -44,6 +47,11 @@ EXEC_FAILED = "failed"
 EXEC_SKIPPED = "skipped"
 
 TERMINAL_EXEC_STATUSES = frozenset({EXEC_FILLED, EXEC_CANCELED})
+
+#: 全部已知的回执状态。**读入侧不认识的状态不判失败**（按非终态处理，这是安全方向），
+#: 但会告警 —— 见 `executions_to_index`。
+EXEC_STATUSES = frozenset({EXEC_SUBMITTED, EXEC_FILLED, EXEC_CANCELED,
+                           EXEC_FAILED, EXEC_SKIPPED})
 
 
 # ------------------------------------------------------------
@@ -160,6 +168,10 @@ class Signal:
     #: 由 `StrategyContext.signal()` 填成**计划时刻**：同一轮任务重试时
     #: `created_at` 会变、锚不变，于是 `sig_id` 也不变。见 `make_id()`。
     anchor: str | None = None
+    #: `sig_id` 是不是**调用方显式给的**（构造时传了 `sig_id=`，或从线格式读到 `id`）。
+    #: 调度器只给**没显式给过 id** 的信号补锚 —— 别人指定过的 id 不许被改写。
+    #: 内部状态，不进线格式，也不参与相等比较。
+    explicit_id: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         self.code = to_jq(self.code)
@@ -171,6 +183,8 @@ class Signal:
             self.created_at = datetime.now()
         if self.sig_id is None:
             self.sig_id = self.make_id()
+        else:
+            self.explicit_id = True
 
     def make_id(self) -> str:
         """信号 ID = 时间戳 + 代码 + 动作。
@@ -187,6 +201,11 @@ class Signal:
 
         `anchor` 为空时退回 `created_at`，所以手工构造的 `Signal(...)`
         与加锚之前的行为完全一致。
+
+        ⚠️ **直接构造 `Signal(...)`（而不是走 `ctx.signal()`）时不会自动带锚。**
+        调度器在 `Runner.run_round` 里补这一步：只要信号**没有显式给过 id**，
+        就用这一轮的计划时刻给它补锚并重算 `sig_id` —— 否则「重试 → 新 id →
+        重复下单」这个形状会从另一条路绕回来。
         """
         base = self.anchor or self.created_at.strftime("%Y%m%d%H%M%S")
         return f"{base}_{self.code}_{self.action}"
@@ -524,6 +543,15 @@ def payload_to_signals(payload: Any) -> list[Signal]:
     for position, item in enumerate(payload):
         if not (isinstance(item, dict) and item.get("code") and item.get("action")):
             continue
+        if not item.get("id"):
+            # ★ 缺 id 不能「补一个现在的时间」。那样每一次重读都会得到**不同的**
+            #   幂等键，重试就变成重复下单 —— 而且没有任何报错。
+            #   `id` 是线格式的必需项（`Signal.to_dict()` 一定写它），
+            #   缺了就说明这一条不是本框架写出来的，或上游把它改坏了。
+            raise WireFormatError(
+                f"信号队列第 {position} 条没有 id"
+                f"（code={item.get('code')!r}，action={item.get('action')!r}）"
+                " —— id 是幂等键，缺了它无法安全执行")
         try:
             out.append(Signal.from_dict(item))
         except Exception as e:  # noqa: BLE001 - 统一转成可诊断的线格式错误
@@ -551,13 +579,25 @@ def executions_to_index(payload: Any, keep_latest: bool = True) -> dict[str, Exe
             continue
         sid = item.get("signal_id")
         if not sid:
-            continue
+            # ★ 与本函数末尾那句「回执绝不能静默跳过」同一条理由：
+            #   一条认不出归属的回执若被跳过，记账里这笔就等于「没执行过」，
+            #   执行端可能据此重新下单。只有**不是 dict** 的东西才算噪声。
+            raise WireFormatError(
+                f"回执列表第 {position} 条没有 signal_id"
+                f"（status={item.get('status')!r}）—— 无法归属到任何信号")
         # ★ 这个 continue 不能省。初版这里两个分支写的是同一句
         # `index[sid] = exec_`，于是 `keep_latest=False` 会被静默忽略 ——
         # 参数等于不存在，调用方拿到的是最新一条却以为是最早一条。
         # 参数被静默忽略是比崩溃更坏的一种 bug：它给出的是错误答案，不是失败。
         if not keep_latest and sid in index:
             continue
+        status = item.get("status")
+        if status not in EXEC_STATUSES:
+            # 只告警，不改行为：未知状态目前按「非终态」处理（安全方向 ——
+            # 不会被当成已成交而跳过），但拼错成 `filld` 这种事只能靠这行发现。
+            log.warning("回执 %s 的状态 %r 不在已知取值内 %s —— "
+                        "按非终态处理（不会被当成已成交）",
+                        sid, status, sorted(EXEC_STATUSES))
         try:
             index[sid] = Execution.from_dict(item)
         except Exception as e:  # noqa: BLE001 - 统一转成可诊断的线格式错误

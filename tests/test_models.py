@@ -194,11 +194,32 @@ def test_executions_index_can_keep_first_status():
     assert executions_to_index(payload, keep_latest=False)["s1"].status == EXEC_SUBMITTED
 
 
-def test_executions_index_ignores_junk():
-    payload = [None, "字符串", {"没有": "signal_id"},
-               {"signal_id": "s9", "status": EXEC_FILLED}]
+def test_executions_index_ignores_only_non_dicts():
+    """**不是 dict** 的东西才是噪声；dict 但没 `signal_id` 是坏回执，必须抛。
+
+    这一条与下面 `test_receipts_without_a_signal_id_raise` 成对存在：
+    少了它，实现可以靠「一律抛」作弊；少了那一条，实现可以靠「一律跳过」作弊。
+    """
+    payload = [None, "字符串", 42, {"signal_id": "s9", "status": EXEC_FILLED}]
     index = executions_to_index(payload)
     assert set(index) == {"s9"}
+
+
+def test_executions_index_warns_on_an_unknown_status(caplog):
+    """未知状态**不改行为**（按非终态处理），但必须留下告警。
+
+    拼错成 `filld` 这种事不会崩、也不会被当成已成交（安全方向），
+    唯一的发现途径就是这行 warning。
+    """
+    payload = [{"signal_id": "s1", "code": CLEAN_CODES[0], "action": ACTION_BUY,
+                "status": "filld"}]
+
+    with caplog.at_level("WARNING", logger="signalchain.models"):
+        index = executions_to_index(payload)
+
+    assert index["s1"].status == "filld"
+    assert index["s1"].is_terminal is False
+    assert any("filld" in r.getMessage() for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -355,6 +376,15 @@ def test_unparseable_receipt_raises_with_position_and_signal_id():
     assert "s2" in text
 
 
-def test_receipts_without_a_signal_id_are_still_skipped():
-    """没有 `signal_id` 的条目谈不上「丢回执」—— 它无从归属，跳过。"""
-    assert executions_to_index([{"status": EXEC_FILLED}, "垃圾"]) == {}
+def test_receipts_without_a_signal_id_raise():
+    """★ 没有 `signal_id` 的回执**必须抛**，不能跳过。
+
+    它无从归属；跳过它 = 记账里「这笔没执行过」⇒ 执行端可能重新下单。
+    只有不是 dict 的东西才算噪声（见上一条）。
+    """
+    from signalchain.models import WireFormatError
+
+    with pytest.raises(WireFormatError) as info:
+        executions_to_index([{"status": EXEC_FILLED}, "垃圾"])
+
+    assert "第 0 条" in str(info.value)
