@@ -130,3 +130,17 @@ def test_head_not_on_a_tag_with_unreleased_section_passes(tmp_path, monkeypatch)
     _changelog(tmp_path, "未发布（`v0.1.0` 之后）")
 
     assert cv._tag_problems(tmp_path, "0.1.0") == []
+
+
+def test_a_version_ahead_of_the_last_tag_is_allowed_before_release(tmp_path, monkeypatch):
+    """★ 发布前的中间状态必须合法：`__version__` 已经是 0.2.0，但最后一个 tag 还是
+    v0.1.0、CHANGELOG 也还是「未发布」。
+
+    这一条钉的是**流程**：改版本号与打标签是两步，中间会停留好几天。
+    如果检查器只接受「版本号 == 最近 tag」，那这段时间 CI 会一直红，
+    红久了就有人把它改为「允许不一致」—— 检查器就此失效。
+    """
+    _fake_git(monkeypatch, at_tag=None)
+    _changelog(tmp_path, "未发布（`v0.1.0` 之后）")
+
+    assert cv._tag_problems(tmp_path, "0.2.0") == []
