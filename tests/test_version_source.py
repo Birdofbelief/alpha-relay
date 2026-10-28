@@ -83,6 +83,8 @@ def _fake_git(monkeypatch, *, at_tag: str | None):
     def git(root, *args):
         if args[0] == "rev-parse":
             return 0, ".git"
+        if args[0] == "tag":
+            return 0, at_tag or ""
         if args[0] == "describe":
             return (0, at_tag) if at_tag else (1, "")
         return 1, ""
@@ -144,3 +146,47 @@ def test_a_version_ahead_of_the_last_tag_is_allowed_before_release(tmp_path, mon
     _changelog(tmp_path, "未发布（`v0.1.0` 之后）")
 
     assert cv._tag_problems(tmp_path, "0.2.0") == []
+
+
+def _fake_git_with_tags(monkeypatch, tags: list[str], *, at_tag: str | None = None):
+    def git(root, *args):
+        if args[0] == "rev-parse":
+            return 0, ".git"
+        if args[0] == "tag":
+            return 0, "\n".join(tags)
+        if args[0] == "describe":
+            return (0, at_tag) if at_tag else (1, "")
+        return 1, ""
+    monkeypatch.setattr(cv, "_git", git)
+
+
+def test_every_version_tag_needs_a_changelog_heading(tmp_path, monkeypatch):
+    """★ 不只是 HEAD 那个标签 —— **历史上每个版本**都要能在 CHANGELOG 里查到。
+
+    只查 HEAD 会漏掉「CHANGELOG 被重写时弄丢了旧版本标题」：标签还在，
+    别人翻那一版却查不到改了什么。
+    """
+    _fake_git_with_tags(monkeypatch, ["v0.1.0", "v0.2.0"], at_tag=None)
+    _changelog(tmp_path, "v0.1.0 — 2026-09-21")
+
+    # 顶部不是「未发布」，所以除了 v0.2.0 缺标题，还会报未发布那条
+    problems = cv._tag_problems(tmp_path, "0.2.0")
+    assert any("v0.2.0" in p and "CHANGELOG" in p for p in problems)
+    assert not any("`## v0.1.0`" in p for p in problems)
+
+
+def test_non_semver_tags_are_ignored(tmp_path, monkeypatch):
+    _fake_git_with_tags(monkeypatch, ["v0.1.0", "experiment", "v0.3"], at_tag=None)
+    _changelog(tmp_path, "v0.1.0 — 2026-09-21")
+
+    problems = cv._tag_problems(tmp_path, "0.2.0")
+    assert not any("experiment" in p or "v0.3" in p for p in problems)
+
+
+def test_the_not_on_a_tag_error_points_at_the_release_step(tmp_path, monkeypatch):
+    """发版提交那一刻最容易看到这条 —— 报错必须说清「下一步是打 tag」。"""
+    _fake_git_with_tags(monkeypatch, [], at_tag=None)
+    _changelog(tmp_path, "v0.2.0 — 2026-10-28")
+
+    problems = cv._tag_problems(tmp_path, "0.2.0")
+    assert any("tag" in p for p in problems)

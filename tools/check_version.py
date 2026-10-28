@@ -117,26 +117,44 @@ def _tag_problems(root: Path, version: str) -> list[str]:
     if not headings:
         raise ValueError("CHANGELOG.md 里一个 `## ` 标题都没有")
 
+    problems = []
+
+    # ★ **每一个** vX.Y.Z 标签都要在 CHANGELOG 里有对应标题，不只是 HEAD 那个。
+    #   只查 HEAD 会漏掉「历史上有过 v0.1.0，但 CHANGELOG 被重写时弄丢了」——
+    #   那种情况下别人翻旧版本根本查不到那一版改了什么。
+    for t in _version_tags(root):
+        if not any(h.startswith(t) for h in headings):
+            problems.append(
+                f"标签 {t} 存在，但 CHANGELOG.md 里没有 `## {t}` 标题")
+
     rc, tag = _git(root, "describe", "--tags", "--exact-match", "HEAD")
     at_tag = rc == 0 and tag.startswith("v")
 
-    problems = []
     if at_tag:
         expected = f"v{version}"
         if tag != expected:
             problems.append(
                 f"HEAD 在标签 {tag} 上，但 __version__ 是 {version}"
                 f"（应为 {expected[1:]}）")
-        if not any(h.startswith(expected) for h in headings):
-            problems.append(
-                f"标签 {tag} 存在，但 CHANGELOG.md 里没有 `## {expected}` 标题"
-                " —— 发布提交必须同时改标题")
     else:
         if _UNRELEASED not in headings[0]:
             problems.append(
                 f"HEAD 不在版本标签上，但 CHANGELOG.md 顶部是「{headings[0]}」"
-                f" —— 未发布的改动必须先落在「{_UNRELEASED}」段")
+                f" —— 未发布的改动必须先落在「{_UNRELEASED}」段。"
+                f"**如果这是发版提交，那是下一步没做完：先创建并推送 tag**"
+                f"（顺序见 docs/RELEASING.md；tag 要单独 `git push origin vX.Y.Z`）")
     return problems
+
+
+_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def _version_tags(root: Path) -> list[str]:
+    """所有 `vX.Y.Z` 形状的标签。其它形状（试验性的、别名的）不参与检查。"""
+    rc, out = _git(root, "tag", "--list", "v*")
+    if rc != 0:
+        return []
+    return [t.strip() for t in out.splitlines() if _TAG_RE.match(t.strip())]
 
 
 def check(root: Path = ROOT) -> list[str]:

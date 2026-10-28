@@ -98,6 +98,17 @@ jobs:
           cd /tmp/elsewhere
           python -m signalchain.demo --quiet
 
+      # ★ 只装包、不校验的话，「`[tool.setuptools.dynamic]` 指错模块」这类错
+      #   在 CI 里是看不见的：包能装上（版本号只是元数据不对），演示也能跑。
+      #   这里**从仓库外的目录** import 已安装的包 —— 与上一步同一个理由，
+      #   必须在包外读，才不会从仓库根的 `signalchain/` 读到本地目录。
+      - name: 已安装包的版本与源码一致
+        run: |
+          cd /tmp/elsewhere
+          python -c "import importlib.metadata as m, signalchain; \
+          a, b = m.version('signal-chain'), signalchain.__version__; \
+          assert a == b, f'打包元数据 {a} != 源码 {b}'; print('version ok:', a)"
+
   # ============================================================
   # 版本号一致性
   # ============================================================
