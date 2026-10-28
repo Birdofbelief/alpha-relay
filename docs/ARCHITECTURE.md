@@ -8,7 +8,7 @@
 | 层 | 模块 | 依赖谁 |
 |---|---|---|
 | **L0 叶子**（零包内依赖） | `models` `config` `calendar` `notify` `executor` `marketdata/base` `transport/base` | —— |
-| **L1 零件** | `gates` `store` | `models`（+ `transport/base`） |
+| **L1 零件** | `gates` `store` `limits` | `models`（+ `transport/base`） |
 | **L1 后端实现** | `marketdata/{cache,online,fake}` `transport/{file,gist,null}` | `base` 家族 |
 | **L1 后端加载** | `transport/__init__`（`load_transport`） | `base` 家族 + `config` |
 | **L2 角色** | `strategy` `paper` | `calendar` / `gates` / `marketdata/base` / `models` / `store` |
@@ -53,6 +53,7 @@ signalchain/
 │   └── demo_basic.py  示例策略（**明确非实盘**，只证明框架与策略无关）
 │
 ├── gates.py         ★ 三个 fail-closed 闸门 + GateChain
+├── limits.py        涨跌停幅度与取整（交易所规则，不是策略参数）
 ├── strategy.py      ★ Strategy 基类 + StrategyContext + 仓库外策略加载
 ├── store.py         四个 channel 的读写门面（含回执索引、队列清理）
 ├── notify.py        通知（Console / ServerChan / 多路复用 / 节流）
