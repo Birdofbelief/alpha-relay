@@ -6,58 +6,67 @@
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-requests%20%2B%20pandas-informational.svg)](pyproject.toml)
 [![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
 
-> **中文** | [English](README.en.md)
->
-> A pluggable Python framework for **quant trading** signal delivery: your strategy stays a
-> pure `decide(ctx)`, while the framework owns risk gates, delivery, retries, receipts,
-> position reconciliation, scheduling and heartbeats. Runs fully offline, zero credentials.
+> [English](README.en.md)
 
-**把「策略」和「把策略的信号安全送到券商」拆开的框架。**
+**策略说买什么；它负责把这句话安全送到执行端，并确认真的送到了。**
 
-一句话：**你的 alpha 留在自己机器上，框架负责把它安全送到。**
-策略在**你自己的机器上**跑（数据从 akshare / tushare 或你自己的源来），
-只需要实现一个 `decide(ctx)`；数据质量校验、风控闸门、投递、重试、回执、
-持仓对账、调度、心跳、告警，全部由链路负责。
+**不替你想策略，也不替你下单。**
 
-**给谁用**
-
-- 策略已经能跑，但**「跑通」和「敢让它自己天天跑」之间还差一整套管路**的人 ——
-  重试、写者唯一、回执、对账、心跳、告警在这里是现成的，而且**每一块都能换**。
-- 想把策略放在**仓库外、券商平台外**的人 —— 这两处正是 alpha 最容易漏出去的地方。
-- 想**离线验证**策略的人 —— `decide(ctx)` 是纯函数，所以能回放；
-  回放不了的策略没法验证，只能靠信仰。
-
-**投递通道可拔插**（本地文件 / Gist / 空实现，或**你自己写的任意存储** ——
-把后端类放进仓库外一个 `.py` 文件，配置里指个路径就完事，框架一行不用改），
-**执行端也可拔插** —— 接你自己的券商终端（ptrade / miniQMT 这类客户端，或你自己写的适配层）。
-策略从**仓库外路径**加载：**你的 alpha 不进这个仓库，也不进券商平台。**
+一条交易信号，从"策略算出来"到"券商真的下单"，中间隔着很多**不会报错、只会悄悄不干活**的地方：
+数据坏了、信号发丢了、重试变成重复下单、成交了没人记、两边持仓对不上。
+alpha-relay 就是把这一段接过去的**管路**。
 
 ```
-三步跑起来（Python 3.10+）：
-    python -m pip install requests pandas   # 第一次跑：装仅有的两个运行时依赖
-    python -m signalchain.demo              # 零凭据、零网络、零券商，跑完打印四个 channel 的真实字节
-    python -m pytest                        # 全部离线，不需要任何凭据
+[你的策略] --信号--> [alpha-relay] --信号--> [你的执行端] --委托--> [券商]
+ 你写 decide()        管中间这一段              你接的券商终端       真正下单
+ 放在仓库外            就是本仓库                放在仓库外
 ```
+
+三段路，三段归属：
+
+- **你的策略**：决定买什么、卖什么。alpha 是你的，代码放在仓库外。
+- **alpha-relay（本仓库）**：把信号**可靠地**送过去——统一格式、拦住坏数据、
+  失败重试、记回执、对账、定时跑、卡住了报警。
+- **你的执行端**：真正连券商、把信号变成委托。也在仓库外。仓库里只有一个
+  **纸面执行端**（`PaperExecutor`），用来演示和测试，**不连任何券商**。
+
+**它跑在哪？** 你选：本机、云主机、VPS 都行（见[跨机器那一节](#跨机器信号怎么从产生端走到执行端)）。它**不提供云主机**，也不要求你一定放云上。
+唯一不变的是：**策略不进这个公开仓库，也不进券商平台。**
+
+### 它管什么 / 不管什么
+
+| 它管 | 它不管 |
+|---|---|
+| 信号格式统一（策略和执行端能互相看懂） | 不替你想策略（alpha 是你的） |
+| 坏数据、持仓对不上时**拦住买入**（卖出照常） | 不提供行情数据源 |
+| 投递失败重试，不静默丢信号 | 不提供云主机，不替你部署 |
+| 记录执行回执（到底成交没有） | 不含券商客户端，**不替你下单** |
+| 持仓对账（两边对不上会报警/禁买） | 不做回测（回测是另一件事） |
+| 定时调度、心跳、告警 | 不做网页，不做数据库 |
+
+### 为什么不能用一个脚本凑合？
+
+脚本能让信号"跑通"。但"敢让它天天自己跑"，还差四件事：
+
+1. **出错时停对方向**——数据坏了该停哪一半，不是"越保守越好"；
+2. **重试不会变成重复下单**——同一条信号要有可复现的幂等键；
+3. **成交有回执**——执行端到底做没做，要能查；
+4. **持仓能对账**——两边对不上时，宁可禁买也不重复建仓。
+
+这四件事坏掉的时候**通常不报错**——只是从某天起悄悄不干活了。
+本项目的重点，就是把这四个"静默失效"变成会报警、会拦住、会留下记录。
+
+> **30 秒跑一遍**（不需要账号、网络或券商）：
+> ```
+> python -m pip install requests pandas
+> python -m signalchain.demo
+> python -m pytest
+> ```
 
 > Windows 上 `python` 若打不开、或把你送进微软商店，把命令里的 `python` 换成
 > `py`；也可以直接双击 `demo.cmd`。详见[快速上手](#快速上手)。
 
-> **English** — *alpha-relay* decouples a trading strategy from the plumbing that
-> delivers its signals safely. Your strategy runs on **your own machine** and implements
-> one pure function, `decide(ctx)`; the framework owns data-quality gates, risk gates,
-> delivery, retries, execution receipts, position reconciliation, scheduling, heartbeats
-> and alerting.
-> **Both ends are pluggable**: the delivery channel (local file / GitHub Gist / null, or
-> any store you implement — drop the backend class in a `.py` file outside this repo and
-> point `SC_TRANSPORT` at it; no file in this package changes) and the executor (wire up
-> your own broker terminal — ptrade,
-> miniQMT and the like, or an adapter layer you write yourself). Strategies are loaded
-> from paths outside this repository, so
-> **your alpha never enters this repo, and never enters the broker's platform either.**
-> The chain runs end to end with **zero credentials, zero network and zero broker**
-> — install the two runtime deps first (`python -m pip install requests pandas`),
-> then `python -m signalchain.demo`. Design notes and reference docs are written in
-> Chinese; this README is the entry point.
+> English README: [README.en.md](README.en.md)
 
 ---
 
@@ -500,7 +509,7 @@ setup_logging()          # 掰 UTF-8 + 配日志，合并成一次调用
 
 ## 跨机器：信号怎么从产生端走到执行端
 
-产生端和执行端常常不在同一台机器上 —— 策略在你本机（或一台跑数据的机器）上，
+产生端和执行端常常不在同一台机器上 —— 策略在你本机、云主机或一台跑数据的机器上，
 执行端在券商终端那一侧。两端之间需要一个**双方都够得着**的地方放那四个 channel。
 
 本框架**对那是个什么地方不做规定**，它只要求那一处存储能实现 `Transport`
@@ -517,6 +526,7 @@ describe() -> str               # 一句话自报身份（不得含凭据）
 | 场景 | 用什么 |
 |---|---|
 | **两端同机** | 就用内置的 `FileTransport`（`SC_TRANSPORT=file`）。零凭据、零网络、零外部服务（只需 `requests` + `pandas` 两个包）—— `python -m signalchain.demo` 走的就是这条 |
+| **策略在云主机、执行端在券商终端那侧** | 这就是首屏那段「三段路」里的中段：策略进程在云上产生信号，执行端在你自己的终端上消费。链路**不要求两端同机**；存储选哪种，取决于**执行端那台机器能读到什么**（见下面两行） |
 | **跨机器，你已有对象存储** | 自己写一个 `Transport` 子类（三个方法，几十行）放进**仓库外**的 `.py` 文件，然后 `SC_TRANSPORT=../my_objectstore.py` 指过去 —— 框架一行不用改，写法见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第六节。整份对象的替换是原子的（不会读到半截 JSON），但**丢更新照样会发生** —— 两个写者同时写，后写的覆盖先写的。所以它吃的是下面那条 ★，不是绕开它 |
 | **跨机器，想先用现成的** | 内置的 `GistTransport` 是一个**参考实现**：它演示了「怎么把一个只会整份读写的 HTTP 服务包成 `Transport`」。能用，但它不是唯一的、也不是默认推荐的那个 |
 

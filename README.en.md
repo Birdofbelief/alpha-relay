@@ -6,40 +6,66 @@
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-requests%20%2B%20pandas-informational.svg)](pyproject.toml)
 [![Credentials](https://img.shields.io/badge/credentials-zero%20literals-brightgreen.svg)](docs/SANITIZATION.md)
 
-> **English** | [中文](README.md)
+> [中文](README.md)
 
-**A framework that decouples your strategy from the plumbing that carries its signals to a broker.**
+**Your strategy decides what to buy. alpha-relay makes sure that decision reaches your
+execution side — reliably — and that it actually got there.**
 
-In one line: **your alpha stays on your machine; the framework makes sure it arrives safely.**
+**It does not invent your strategy, and it does not place your orders.**
 
-The strategy runs **on your own machine** (data comes from akshare / tushare or your own source) and
-implements a single function, `decide(ctx)`. Data-quality checks, risk gates, delivery, retries,
-execution receipts, position reconciliation, scheduling, heartbeats and alerting are the chain's job.
-
-**Who it is for**
-
-- People whose strategy already runs, but who are missing everything between *"it runs"* and
-  *"I dare let it run unattended every day"* — retries, a single writer, receipts, reconciliation,
-  heartbeats and alerting are here, and **every piece is replaceable**.
-- People who want their strategy to live **outside this repo and outside the broker's platform** —
-  both are exactly where alpha leaks.
-- People who want to **verify a strategy offline**: `decide(ctx)` is pure, so it can be replayed.
-  A strategy that cannot be replayed cannot be verified — only believed in.
-
-**Both ends are pluggable.** The delivery channel (local file / GitHub Gist / null, or **any store you
-write yourself** — drop the backend class in a `.py` file outside this repo, point the config at it,
-and not one file in this package changes) and the executor (wire up your own broker terminal —
-ptrade / miniQMT and the like, or an adapter layer you write). Strategies are loaded from a path
-**outside the repository**, so **your alpha never enters this repo and never enters the broker's
-platform either.**
+Between "the strategy computed a signal" and "the broker placed an order" there is a
+stretch of plumbing that **fails silently, not loudly**: bad data, dropped signals,
+retries that duplicate orders, fills nobody recorded, positions that no longer match.
+alpha-relay owns that stretch.
 
 ```
-Three commands to see it work (Python 3.10+):
-    python -m pip install requests pandas   # the only two runtime deps, once
-    python -m signalchain.demo              # zero credentials, zero network, zero broker;
-                                            # prints the real bytes of all four channels
-    python -m pytest                        # fully offline, no credentials needed
+[Your strategy] --signal--> [alpha-relay] --signal--> [Your executor] --order--> [Broker]
+ you write decide()          this repo                  your broker adapter       places the order
+ outside this repo           owns the middle            outside this repo
 ```
+
+Three legs, three owners:
+
+- **Your strategy** decides what to buy or sell. The alpha is yours; the code lives outside this repo.
+- **alpha-relay (this repo)** delivers the signal reliably: one format, data/risk gates,
+  retries, execution receipts, position reconciliation, scheduling, heartbeats, alerts.
+- **Your executor** talks to the broker and turns the signal into an order. It is also outside
+  this repo. The only executor here is `PaperExecutor`, a **no-broker placeholder** for demos and tests.
+
+**Where does it run?** Wherever you deploy it: your laptop, a cloud VM, a VPS
+(see [the cross-machine section](#across-machines-how-a-signal-gets-from-producer-to-executor)).
+It does **not** provide the cloud, and it does not require one. The invariant is:
+**your strategy never enters this public repo, and never enters the broker platform.**
+
+### What it owns / what it does not
+
+| It owns | It does not |
+|---|---|
+| One signal format both ends understand | Invent your strategy (the alpha is yours) |
+| Blocking **buys** on bad data or position mismatch (sells still go) | Provide market data |
+| Delivery retries; no silent drops | Provide a cloud host or deploy for you |
+| Execution receipts (did it actually fill?) | Contain a broker client — **it does not place orders** |
+| Position reconciliation (mismatch ⇒ alert / block buys) | Run backtests (a separate concern) |
+| Scheduling, heartbeats, alerting | Provide a web UI or a database |
+
+### Why not just one script?
+
+A script can make a signal "work once." Running it unattended every day needs four more things:
+
+1. **fail in the right direction** — when data is bad, blocking the right half matters more than "being conservative";
+2. **retries that cannot become duplicate orders** — reproducible idempotency keys;
+3. **receipts** — proof of what the execution side actually did;
+4. **reconciliation** — when the two sides disagree, block buys rather than build a position twice.
+
+When these four break, they usually **do not raise** — the chain just quietly stops doing its job.
+This project's point is to turn those silent failures into alerts, blocks, and records.
+
+> **30-second demo** (no account, no network, no broker):
+> ```
+> python -m pip install requests pandas
+> python -m signalchain.demo
+> python -m pytest
+> ```
 
 > **Windows:** if `python` does not open, or drops you into the Microsoft Store, replace `python`
 > with `py` — or just double-click `demo.cmd`.
@@ -493,8 +519,8 @@ host's streams is a worse defect than the original problem. The full story is in
 
 ## Across machines: how a signal gets from producer to executor
 
-The producer and the executor are usually not on the same machine — the strategy lives on yours (or
-on a machine that crunches data), while the executor sits next to the broker terminal. The two ends
+The producer and the executor are usually not on the same machine — the strategy lives on your machine or a
+cloud VM (or a machine that crunches data), while the executor sits next to the broker terminal. The two ends
 need a place **both can reach** to hold those four channels.
 
 This framework **does not care what that place is**; it only requires that the store implement
@@ -511,6 +537,7 @@ Pick by scenario:
 | Scenario | Use |
 |---|---|
 | **Both ends on one machine** | the built-in `FileTransport` (`SC_TRANSPORT=file`). Zero credentials, zero network, zero external services — only the two packages `requests` + `pandas`. This is the path `python -m signalchain.demo` takes |
+| **Strategy on a cloud VM, executor on the broker-terminal side** | this is the middle leg of the three-leg picture on the first screen: the strategy process produces signals in the cloud, the executor consumes them on your own terminal. The chain **does not require both ends on one machine**; which store to use depends on **what the executor’s machine can read** (see the next two rows) |
 | **Cross-machine, you already have object storage** | write a `Transport` subclass (three methods, a few dozen lines) in a `.py` file **outside the repo**, then point `SC_TRANSPORT=../my_objectstore.py` at it — not one line of this framework changes; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) section 6. Replacing a whole object is atomic (you never read half a JSON), but **lost updates still happen**: two writers at once, the later overwrites the earlier. So it is bound by the ★ below, not exempt from it |
 | **Cross-machine, want something ready-made** | the built-in `GistTransport` is a **reference implementation**: it demonstrates wrapping an HTTP service that only does whole-document reads and writes into a `Transport`. It works, but it is neither the only option nor the default recommendation |
 
