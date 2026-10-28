@@ -156,6 +156,10 @@ class Signal:
     created_at: datetime | None = None
     sig_id: str | None = None
     processed: bool = False
+    #: 幂等锚（`%Y%m%d%H%M%S`）。**不进线上格式** —— 线上的幂等键是 `id` 本身。
+    #: 由 `StrategyContext.signal()` 填成**计划时刻**：同一轮任务重试时
+    #: `created_at` 会变、锚不变，于是 `sig_id` 也不变。见 `make_id()`。
+    anchor: str | None = None
 
     def __post_init__(self) -> None:
         self.code = to_jq(self.code)
@@ -174,8 +178,18 @@ class Signal:
         刻意做成**确定性**的：同一个时点对同一标的同一动作只会生成同一个 ID。
         执行端拿它做幂等键 —— 重发同一条信号不会重复下单。若这里掺入随机数或
         自增序号，「重试」就会变成「重复下单」。
+
+        ★ **优先用 `anchor`（计划时刻），而不是 `created_at`。**
+        两者只在「任务晚了 / 重试了」时分叉：`created_at` 是**实际**决策时刻，
+        每重试一次就变一次；`anchor` 固定指向那个计划时刻。拿实际时刻当幂等键，
+        会得到「重试 → 新 ID → 去重失效 → 重复下单」——
+        姊妹项目在实盘上踩过一模一样的形状。
+
+        `anchor` 为空时退回 `created_at`，所以手工构造的 `Signal(...)`
+        与加锚之前的行为完全一致。
         """
-        return f"{self.created_at.strftime('%Y%m%d%H%M%S')}_{self.code}_{self.action}"
+        base = self.anchor or self.created_at.strftime("%Y%m%d%H%M%S")
+        return f"{base}_{self.code}_{self.action}"
 
     def to_dict(self) -> dict[str, Any]:
         """序列化为线上格式。**键的顺序与既有实现一致**，便于 golden 对比。"""
@@ -494,12 +508,29 @@ def signals_to_payload(signals: Iterable[Signal]) -> list[dict[str, Any]]:
 
 
 def payload_to_signals(payload: Any) -> list[Signal]:
+    """把信号队列转成 `Signal` 列表。
+
+    ★ **「不是信号形状」跳过，「是信号形状但解析不了」必须抛。**
+    这两种情况原来共用同一个 `if`，于是一条字段写坏的信号会被静默丢掉 ——
+    调用方看到的是「队列里就这些」，而那条卖出永远不会执行。
+    版本不匹配、上游改了字段名、半个 JSON 被截断，都会长成这个样子。
+
+    `WireFormatError` 里带上**序号与 id**：没有它，用户只知道「读不出来」，
+    不知道去队列里翻哪一条。
+    """
     if not isinstance(payload, list):
         return []
     out = []
-    for item in payload:
-        if isinstance(item, dict) and item.get("code") and item.get("action"):
+    for position, item in enumerate(payload):
+        if not (isinstance(item, dict) and item.get("code") and item.get("action")):
+            continue
+        try:
             out.append(Signal.from_dict(item))
+        except Exception as e:  # noqa: BLE001 - 统一转成可诊断的线格式错误
+            raise WireFormatError(
+                f"信号队列第 {position} 条无法解析"
+                f"（id={item.get('id')!r}，code={item.get('code')!r}，"
+                f"action={item.get('action')!r}）：{type(e).__name__}: {e}") from e
     return out
 
 
@@ -515,7 +546,7 @@ def executions_to_index(payload: Any, keep_latest: bool = True) -> dict[str, Exe
     if not isinstance(payload, list):
         return {}
     index: dict[str, Execution] = {}
-    for item in payload:
+    for position, item in enumerate(payload):
         if not isinstance(item, dict):
             continue
         sid = item.get("signal_id")
@@ -527,5 +558,14 @@ def executions_to_index(payload: Any, keep_latest: bool = True) -> dict[str, Exe
         # 参数被静默忽略是比崩溃更坏的一种 bug：它给出的是错误答案，不是失败。
         if not keep_latest and sid in index:
             continue
-        index[sid] = Execution.from_dict(item)
+        try:
+            index[sid] = Execution.from_dict(item)
+        except Exception as e:  # noqa: BLE001 - 统一转成可诊断的线格式错误
+            # ★ 回执**绝不能静默跳过**。丢一条回执 = 记账里「这笔没执行过」⇒
+            #   执行端可能重新下单。宁可整次读取失败（上层 fail-closed），
+            #   也不能给它一个「查无此单」的错误答案。
+            raise WireFormatError(
+                f"回执列表第 {position} 条无法解析"
+                f"（signal_id={sid!r}，status={item.get('status')!r}）："
+                f"{type(e).__name__}: {e}") from e
     return index

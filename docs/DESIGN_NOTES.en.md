@@ -92,6 +92,32 @@ This isn't only about reproducibility — mix in the wall clock and replaying th
 day's quotes generates a batch of brand-new ids, "have I handled this?" forever answers
 "no," and the idempotency key stops working entirely.
 
+### ★★ On retry the id must not change: anchor to the **planned** time
+
+The timestamp inside that id comes from `ctx.now` — the moment this round **actually
+ran**. Once tasks retry, that's a trap:
+
+```
+planned 14:45, first run at 14:45:00 → id suffix 144500
+retry at 14:46:30                    → id suffix 144630   ← a new id!
+```
+
+The executor uses `signal_id` as its idempotency key, so the second pass looks like
+**a brand-new order**. This isn't a theoretical risk: once "a failed round is retried"
+is fixed, retrying goes from "barely happens" to "the default path."
+
+So `StrategyContext.signal()` builds the id from:
+
+- `anchor` (the planned time, passed in by the scheduler) — decides `sig_id`
+- `created_at` / the wire `time` (the actual moment) — records *when the decision was made*
+
+The two are equal normally and diverge only when a run is late or retried. Calling
+`run_round()` by hand (no planned time) leaves `anchor` empty and falls back to the old
+behaviour.
+
+> ★ Generalized: **any dimension of an idempotency key that can change on retry has
+> already broken idempotency** — even if the changing dimension looks "more truthful."
+
 ### Why retries are safe (this one isn't obvious)
 
 `GistTransport._request` retries by **resending the exact same body, and never re-GETs
@@ -137,6 +163,27 @@ Three constants each treat one:
    only `>=` without `catchup_minutes` → still back-filling after the close;
    only `catchup_minutes` without `>=` → 30 seconds late means the whole day is skipped.
 
+### ★★ A failure must count as a failure: `RoundResult.error` is one too
+
+The round runner (`Runner.run_round`) **does not kill the process over a single round's
+exception**: it records the exception into `RoundResult.error` and returns. That's right —
+one task failing shouldn't take the others down.
+
+But the scheduler (`run_due`) **has to notice that return value.** It used to look only at
+"did it raise," so on the default path:
+
+- the task failed every day while `executed_tasks` still recorded it ⇒ **no retry that day**
+- the heartbeat still said alive ⇒ monitoring never fired
+- the "consecutive failure limit" never triggered ⇒ those three log lines never appeared
+
+Together: **the process is alive, the heartbeat is healthy, the task fails every day, and
+the terminal shows no trace of it.** The fix: a non-empty `result.error` counts as a
+failure — don't mark it executed, bump the fail count, escalate the heartbeat to error;
+only at `task_fail_limit` do we explicitly give up for the day.
+
+★ This fix **has to ship together with "anchor to the planned time"** above. Retrying
+re-runs `decide`; without the anchor that means duplicate orders. Two patches, one unit.
+
 ### ★★ A known sharp edge: the consecutive-failure window is only 90 seconds
 
 `task_fail_limit = 3` × `LOOP_INTERVAL_SECONDS = 30` ⇒
@@ -145,10 +192,13 @@ for the day and set the heartbeat to error.**
 
 The intent is right (not giving up = 2880 log lines), but the window means:
 **a transient fault lasting 90 seconds (a network blip, one 5xx from the data source,
-one restart) can destroy that task for the day.**
+one restart) can destroy that task for the day.** With the fix above, this window now
+**actually applies** — before, it was mostly decoration.
 
 This is **deliberately kept**, not an oversight — giving up is **explicit** (it logs and
 sets the heartbeat to error for a human), not silent. But the user has to know the number.
+If it feels short, raise `SC_TASK_FAIL_LIMIT`: multiply it by 30 seconds to get the total
+wait before giving up.
 
 > ★ Which yields a more general lesson: **"it's wrapped in a try" ≠ "it's safe."**
 > The outermost `except` in the main loop does keep the process alive — and it also turns
@@ -276,6 +326,46 @@ Every check in the market-data layer follows one rule:
 
 `describe()` exposes hit / kept / skipped so that "how many decisions today were made on
 old data" is answerable — **an unobservable degradation is no degradation at all.**
+
+### Limit-up / limit-down: exchange rules belong to the chain, not the strategy
+
+"Which symbol to buy" is the strategy's business; "can this price actually fill" isn't.
+Limit-up/limit-down is the latter:
+
+| Situation | What the paper executor should do | Why |
+|---|---|---|
+| price ≥ limit-up, buying | `submitted` (order waits) | you're at the back of the queue at the board; filling it hands you a buy point for free |
+| price ≤ limit-down, selling | `submitted` | same, other direction |
+| previous close missing / zero | **don't judge** (old behaviour) | unknown ≠ no limit; treating "unknown" as 0 would block every trade |
+
+`submitted` is deliberately a third state: neither filled nor failed — the same meaning as
+"halted, order waiting." Judging it `failed` makes people think the order was rejected;
+judging it `filled` invents a fill. **Either one makes the record lie.**
+
+Rates differ by instrument: default ±10%, `588` prefix (STAR-market ETFs) ±20%, and any
+other 20% symbols listed explicitly in `SC_LIMIT_20_CODES` (plain six-digit codes are
+fine; the framework normalizes them). **The framework deliberately ships no built-in
+"which codes are 20%" list** — that list goes stale as funds launch and rules change, and
+hard-coding it would bake one person's universe into the framework.
+
+Prices round to **0.01 with half-up rounding** (`Decimal` + `ROUND_HALF_UP`, not Python's
+banker's rounding): `1.05 × 0.9` is `0.9449999999999998` in binary; rounding that with
+floats yields 0.94 — one tick below the exchange's 0.95, and that tick decides whether the
+order can sell.
+
+### Position-snapshot freshness: **off** by default
+
+The "sell-only, no buys" gate assumes "positions reconciled." The original test was just
+"can it be read" — so an executor that died and left a three-day-old holdings file still
+counted as reconciled, and stale holdings became evidence that "we still hold it."
+
+`SC_MAX_POSITION_STALE_DAYS` (default `0` = no check) turns on: a snapshot more than N
+trading days behind, or one with no timestamp ⇒ not reconciled ⇒ sell-only for the day.
+
+**Why off by default**: executors don't necessarily write positions often, so turning it on
+can misfire in healthy setups. The value of this switch depends on your executor's
+reliability — the user should decide, not have the framework pick a default that may
+misfire every day.
 
 ---
 

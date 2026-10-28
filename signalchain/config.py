@@ -47,6 +47,8 @@ ENV_KEYS = (
     "SC_MAX_STALE_DAYS",
     "SC_CATCHUP_MINUTES",
     "SC_TASK_FAIL_LIMIT",
+    "SC_MAX_POSITION_STALE_DAYS",
+    "SC_LIMIT_20_CODES",
 )
 
 
@@ -113,6 +115,11 @@ class Config:
     catchup_minutes: int = 30
     task_fail_limit: int = 3
 
+    #: 持仓快照最多落后几个交易日仍算「已对账」。**0 = 不检查**（默认，与旧行为一致）。
+    max_position_stale_days: int = 0
+    #: 额外按 20% 涨跌停处理的代码（逗号分隔）。`588` 前缀已内置为 20%，不必重复列。
+    limit_20_codes: frozenset[str] = field(default_factory=frozenset)
+
     # ---------------- 构造 ----------------
 
     @classmethod
@@ -135,6 +142,8 @@ class Config:
             max_stale_days=int(_num("SC_MAX_STALE_DAYS", 1)),
             catchup_minutes=int(_num("SC_CATCHUP_MINUTES", 30)),
             task_fail_limit=int(_num("SC_TASK_FAIL_LIMIT", 3)),
+            max_position_stale_days=int(_num("SC_MAX_POSITION_STALE_DAYS", 0)),
+            limit_20_codes=_codes("SC_LIMIT_20_CODES"),
         )
 
     # ---------------- 派生路径 ----------------
@@ -208,3 +217,14 @@ def _num(key: str, default: float) -> float:
     except ValueError:
         log.warning("环境变量 %s=%r 不是数字，改用默认值 %s", key, raw, default)
         return default
+
+
+def _codes(key: str) -> frozenset[str]:
+    """逗号分隔的代码清单 → frozenset。空/缺省 → 空集。
+
+    刻意**不做格式校验**：代码形状由数据源决定，这里猜错比不猜更坏。
+    唯一做的是 `strip` 与丢空项（否则 `"a,,b"` 会多出一个空字符串，
+    它永远匹配不到任何标的，却会让日志里的清单看起来是 3 个）。
+    """
+    raw = os.environ.get(key, "")
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())

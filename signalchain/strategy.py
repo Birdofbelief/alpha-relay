@@ -146,8 +146,13 @@ class StrategyContext:
         state: StrategyState | None = None,
         data: DataQuality | None = None,
         aux: dict[str, Any] | None = None,
+        planned_at: datetime | None = None,
     ) -> None:
         self.now = now
+        #: 这一轮**计划**在什么时候跑（调度表里的那个时刻）。
+        #: 与 `now` 的区别只在「晚了 / 重试了」时出现：`now` 每轮都变，
+        #: `planned_at` 不变。信号的幂等 id 锚在它上面 —— 见 `signal()`。
+        self.planned_at = planned_at
         self.calendar = calendar
         self.market = market
         self.state = state or StrategyState()
@@ -252,11 +257,19 @@ class StrategyContext:
         这个判断永远答「没有」—— 重放会变成重复下单。
 
         `price=None` 时自动取当前有效价（停牌/不可信时为 0.0）。
+
+        ★ **id 的锚是 `planned_at`（计划时刻），不是 `self.now`。**
+        定时任务跑晚了或失败重试时，`self.now` 每轮都变 —— 拿它当幂等键，
+        同一笔卖出重试后就会拿到新 id，去重失效 ⇒ 重复下单。
+        `now` 仍是「实际决策时刻」（进日志与信号的 `time` 字段）；
+        准点执行时两者完全相同。
         """
         if price is None:
             price = self.price(code) or 0.0
+        anchor = (self.planned_at or self.now).strftime("%Y%m%d%H%M%S")
         return Signal(code=code, action=action, amount=amount, price=price,
-                      signal_type=signal_type, created_at=self.now)
+                      signal_type=signal_type, created_at=self.now,
+                      anchor=anchor)
 
 
 # ============================================================

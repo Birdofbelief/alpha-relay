@@ -222,13 +222,19 @@ class Runner:
     # 核心：一轮
     # ============================================================
 
-    def run_round(self, now: datetime, task: str = "manual") -> RoundResult:
-        """跑完整的一轮：预热 → 对账 → 决策 → 闸门 → 投递。"""
+    def run_round(self, now: datetime, task: str = "manual",
+                  planned_at: datetime | None = None) -> RoundResult:
+        """跑完整的一轮：预热 → 对账 → 决策 → 闸门 → 投递。
+
+        `now` 是**实际**时刻；`planned_at` 是调度表里那一格的**计划**时刻。
+        只有 `run_due` 会传后者 —— 手工调用时两者等同。
+        区别只体现在信号 id 的锚上，见 `StrategyContext.signal()`。
+        """
         started = time.monotonic()
         result = RoundResult(task=task, at=now)
         ctx = None
         try:
-            ctx = self.build_context(now)
+            ctx = self.build_context(now, planned_at=planned_at)
             signals = list(self.strategy.decide(ctx) or [])
             result.emitted = len(signals)
 
@@ -279,7 +285,8 @@ class Runner:
             return "positions_stale"
         return "alive"
 
-    def build_context(self, now: datetime) -> StrategyContext:
+    def build_context(self, now: datetime,
+                      planned_at: datetime | None = None) -> StrategyContext:
         """组装策略上下文。**数据质量问题在这里被判定并写进 `ctx.data`。**"""
         ctx = StrategyContext(
             now=now,
@@ -287,6 +294,7 @@ class Runner:
             market=self.market,
             state=self.strategy_state,
             data=DataQuality(),
+            planned_at=planned_at,
         )
         # 1) 行情
         try:
@@ -312,20 +320,48 @@ class Runner:
             ctx.data.positions_synced = False
             ctx.data.positions_sync_reason = "读不到执行端持仓（未知 ≠ 空仓）"
             return
+
+        stale_reason = self._positions_staleness(ctx, snapshot)
+        if stale_reason:
+            ctx.data.positions_synced = False
+            ctx.data.positions_sync_reason = stale_reason
+            log.error("× 持仓对账失败：%s —— 当日只卖不买", stale_reason)
+            return
+
         ctx.data.positions_synced = True
         ctx.data.positions_sync_reason = ""
         # 持仓只用于展示与告警；**策略不应拿它替代执行端的真实持仓**，
         # 所以这里不塞进 ctx（策略要持仓应该走信号/回执，而不是猜）。
-        #
-        # ⚠️ 已知取舍：这里**不检查快照的新鲜度** —— 只要能解析就算对账成功。
-        # 这与实盘行为一致。代价是：执行端自己挂了、持仓文件三天没更新时，
-        # 这里仍判「已对账」。「新鲜度」是可观测的（snapshot.updated_at），
-        # 把它纳入判定会更保守，但也会在正常场景下误伤，
-        # 所以留作使用者按自己的执行端可靠性决定。
         log.info("◆ 持仓对账成功：%d 只持仓标的，快照时间 %s",
                  len(snapshot.held_codes()),
                  snapshot.updated_at.strftime("%Y-%m-%d %H:%M:%S")
                  if snapshot.updated_at else "未知")
+
+    def _positions_staleness(self, ctx: StrategyContext, snapshot) -> str:
+        """快照是否已经旧到不能当「已对账」用。返回原因字符串，不旧则返回空串。
+
+        ★ **默认查（`SC_MAX_POSITION_STALE_DAYS=0` 表示关闭）。**
+        关着的时候行为与以前完全一致 —— 只要能解析就算对账成功。
+        打开之后，快照落后超过 N 个交易日（或缺时间戳）⇒ 判未对账。
+
+        为什么值得有：执行端自己挂了、持仓文件三天没更新时，框架仍判「已对账」，
+        于是「只卖不买」这道闸不会落下 —— 过期持仓会被当成「还在手上」的证据。
+        代价是正常场景可能误伤（执行端本来就不常写持仓），所以**默认关**，
+        由使用者按自己执行端的可靠性决定。
+        """
+        max_age = self.config.max_position_stale_days
+        if not max_age:
+            return ""
+        if snapshot.updated_at is None:
+            return "持仓快照没有时间戳，无法确认新鲜度"
+        behind = self.calendar.trading_days_behind(
+            snapshot.updated_at.date(), ctx.now.date())
+        if behind is None:
+            return ""      # 日历不可用 → 不额外判；日历那条有自己的闸
+        if behind > max_age:
+            return (f"持仓快照落后 {behind} 个交易日"
+                    f"（上限 {max_age}），执行端可能已停更")
+        return ""
 
     def _load_aux(self, ctx: StrategyContext) -> None:
         """逐项获取辅助数据，把成败汇总成 `DataQuality` 喂给 `AuxDataGate`。"""
@@ -513,25 +549,57 @@ class Runner:
 
             log.info("△ 触发任务 %s（计划 %s，实际 %s）",
                      name, at, now.strftime("%H:%M"))
+            target = datetime.strptime(f"{day} {at}", "%Y-%m-%d %H:%M")
             try:
-                outcome = fn(now)
-                if isinstance(outcome, RoundResult):
-                    results.append(outcome)
-                self._fail_count[name] = 0
-                self.state.mark_executed(day, name)
-                self.beat(name)
-                log.info("√ %s 完成", name)
-            except Exception as e:  # noqa: BLE001
-                fails = self._fail_count.get(name, 0) + 1
-                self._fail_count[name] = fails
-                log.error("× %s 异常（第 %d 次）: %s", name, fails, e, exc_info=True)
-                self.beat(f"{name}_ERROR", "error")
-                if fails >= self.fail_limit:
-                    # 放弃当天。**显式记下来** —— 静默放弃等于没人知道它没跑
-                    self.state.mark_executed(day, name)
-                    log.error("× %s 连续失败 %d 次，放弃今日补执行，"
-                              "心跳置 error 等人工排查", name, fails)
+                outcome = self._dispatch(name, fn, now, target)
+            except Exception as e:  # noqa: BLE001 - 单轮失败不该杀进程
+                self._record_failure(day, name, f"{type(e).__name__}: {e}",
+                                     exc_info=True)
+                continue
+
+            if isinstance(outcome, RoundResult):
+                results.append(outcome)
+                if outcome.error:
+                    # ★ `run_round` 把异常写进 `result.error` 而不是抛出（见它的
+                    # except 分支：单轮失败不该杀进程）。所以**这里必须当成失败**。
+                    # 不看这一行，就是「任务天天失败、`mark_executed` 照记、心跳照报
+                    # alive」—— 连续失败上限与心跳 error 对默认路径全部失效，
+                    # 而这种失效在终端上没有任何痕迹。
+                    self._record_failure(day, name, outcome.error)
+                    continue
+
+            self._fail_count[name] = 0
+            self.state.mark_executed(day, name)
+            self.beat(name)
+            log.info("√ %s 完成", name)
         return results
+
+    def _dispatch(self, name: str, fn, now: datetime, planned_at: datetime):
+        """调用一个任务。
+
+        默认任务（`run_round`）需要额外拿到**任务名**与**计划时刻**；
+        自定义任务保持公开契约 `fn(now)`，不受影响。
+        """
+        if getattr(fn, "__func__", None) is Runner.run_round:
+            return fn(now, task=name, planned_at=planned_at)
+        return fn(now)
+
+    def _record_failure(self, day: str, name: str, message: str,
+                        exc_info: bool = False) -> None:
+        """记一次失败。
+
+        ★ **没到上限就不 `mark_executed`** —— 不标记才意味着「下一轮还会重试」。
+        到上限才放弃当天并落盘，且**明确写日志**：静默放弃等于没人知道它没跑。
+        """
+        fails = self._fail_count.get(name, 0) + 1
+        self._fail_count[name] = fails
+        log.error("× %s 失败（第 %d 次）: %s", name, fails, message,
+                  exc_info=exc_info)
+        self.beat(f"{name}_ERROR", "error")
+        if fails >= self.fail_limit:
+            self.state.mark_executed(day, name)
+            log.error("× %s 连续失败 %d 次，放弃今日补执行，"
+                      "心跳置 error 等人工排查", name, fails)
 
     def roll_day(self, now: datetime) -> None:
         """跨日复位 + 刷新日历。见 `calendar.py` 的「教训二」：不刷新会全年停摆。

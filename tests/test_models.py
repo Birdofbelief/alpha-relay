@@ -286,3 +286,75 @@ def test_heartbeat_round_trip_and_junk():
     assert (back.status, back.last_task, back.last_time) == (
         "positions_stale", "push_signal", FIXED_NOW)
     assert Heartbeat.from_dict("垃圾").status == "alive"
+
+
+# ------------------------------------------------------------
+# 坏数据的两种坏法 —— 必须区分
+# ------------------------------------------------------------
+def test_signal_shaped_but_unparseable_raises_with_position_and_id():
+    """★ 「是信号形状但解析不了」**必须抛**，不能跳过。
+
+    原来的判断把「不是信号」和「是信号但写坏了」合成了同一个 `if`：
+    一条 `action` 拼错、或 `amount` 被上游改成字符串的信号会被静默丢掉。
+    调用方看到的是「队列里就这些」，那条卖出永远不会执行 —— 而且没有任何报错。
+
+    异常里必须带**序号与 id**：否则用户只知道「读不出来」，不知道去翻哪一条。
+    """
+    from signalchain.models import WireFormatError
+
+    good = Signal(code=CLEAN_CODES[0], action=ACTION_BUY, created_at=FIXED_NOW)
+    broken = dict(good.to_dict(), id="坏掉的那条", action="hold")
+    payload = signals_to_payload([good]) + [broken]
+
+    with pytest.raises(WireFormatError) as info:
+        payload_to_signals(payload)
+
+    text = str(info.value)
+    assert "第 1 条" in text          # 序号（0 基）
+    assert "坏掉的那条" in text        # id
+    assert "hold" in text             # 原始动作，便于一眼看出错在哪
+
+
+def test_unparseable_amount_in_a_signal_also_raises():
+    from signalchain.models import WireFormatError
+
+    payload = [{"code": CLEAN_CODES[0], "action": ACTION_BUY, "amount": "一百股"}]
+
+    with pytest.raises(WireFormatError):
+        payload_to_signals(payload)
+
+
+def test_non_signal_shapes_are_still_skipped_silently():
+    """「根本不是信号」的东西仍然跳过 —— 上面那条不能借机把噪声也变成错误。
+
+    否则队列里任何一条别人的笔记都会让整条链路停摆。
+    """
+    payload = [None, "字符串", 42, {}, {"code": ""}, {"action": "buy"}]
+
+    assert payload_to_signals(payload) == []
+
+
+def test_unparseable_receipt_raises_with_position_and_signal_id():
+    """回执同理，而且更不能跳过。
+
+    丢一条回执 = 记账里「这笔没执行过」⇒ 执行端可能重新下单。
+    宁可整次读取失败（上层 fail-closed），也不能给出「查无此单」这个错误答案。
+    """
+    from signalchain.models import WireFormatError
+
+    payload = [
+        {"signal_id": "s1", "status": EXEC_FILLED},
+        {"signal_id": "s2", "status": EXEC_FILLED, "price": "成交价"},
+    ]
+
+    with pytest.raises(WireFormatError) as info:
+        executions_to_index(payload)
+
+    text = str(info.value)
+    assert "第 1 条" in text
+    assert "s2" in text
+
+
+def test_receipts_without_a_signal_id_are_still_skipped():
+    """没有 `signal_id` 的条目谈不上「丢回执」—— 它无从归属，跳过。"""
+    assert executions_to_index([{"status": EXEC_FILLED}, "垃圾"]) == {}

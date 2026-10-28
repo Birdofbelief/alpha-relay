@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Any
 
 from .config import Config
+from .limits import limit_prices
 from .marketdata.base import MarketDataError
 from .models import (
     ACTION_BUY,
@@ -227,9 +228,20 @@ class PaperExecutor:
         if not price:
             return self._exec(sig, EXEC_SUBMITTED, "最新价为 0，挂单等待", now)
 
+        # 涨跌停：贴板时「买到 / 卖掉」在实盘并不成立。
+        # 纸面端若照常成交，回测会系统性偏乐观，而且不会有任何报错 ——
+        # 这类分歧只能靠模型本身写对来避免（见 limits.py）。
+        # ⚠️ 返回 None = **不知道**前收盘价（不是「没有涨跌停」）⇒ 不判。
+        band = limit_prices(quote.prev_close, code, self.config.limit_20_codes)
+
         limit = float(sig.price or 0)
 
         if action == ACTION_BUY:
+            # 涨停买不到：板上的卖单队列轮不到你，判成交等于白送一个买点。
+            if band is not None and price >= band[0]:
+                return self._exec(
+                    sig, EXEC_SUBMITTED,
+                    f"涨停（现价 {price:.4f} ≥ {band[0]:.4f}），买入挂单等待", now)
             # 限价约束：市价高于限价 → 挂着等，不追价。
             if limit > 0 and price > limit:
                 return self._exec(sig, EXEC_SUBMITTED,
@@ -257,6 +269,12 @@ class PaperExecutor:
         if held <= 0:
             # 这是 PositionsSyncedGate 允许卖出的**前提**：执行端会在这里兜住。
             return self._exec(sig, EXEC_SKIPPED, "账户无该标的持仓，跳过（不视为失败）", now)
+        # 跌停卖不掉。★ 这条放在「有没有持仓」之后：没有持仓时，
+        # 「无持仓」才是真正的原因，先报「跌停」会把人引到错误的方向。
+        if band is not None and price <= band[1]:
+            return self._exec(
+                sig, EXEC_SUBMITTED,
+                f"跌停（现价 {price:.4f} ≤ {band[1]:.4f}），卖出挂单等待", now)
         if limit > 0 and price < limit:
             return self._exec(sig, EXEC_SUBMITTED,
                               f"市价 {price:.4f} 低于限价 {limit:.4f}，挂单等待", now)
