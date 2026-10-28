@@ -217,6 +217,49 @@ access**. Neither the gist_id nor the token appears in a log line.
 > A secret gist **is not private** — it's "not indexed," not "not readable."
 > Anyone who knows the ID can read it. So the Gist ID itself is treated as a credential.
 
+### ★ Bare requests inside third-party libraries: the timeout isn't ours to set
+
+The "timeouts must always have a value" rule above only covers requests **this repository
+sends itself**. The nastier trap lives in someone else's code: `akshare`'s
+`tool_trade_date_hist_sina()` makes its own HTTP call **without a timeout**, and requests
+has **no default upper bound** when none is passed.
+
+The result is not a crash but a **frozen main loop**: the process is alive, heartbeats keep
+being written, and not a single scheduled task runs that day — the log just stops on its
+last line. That shape sends you hunting through strategies and brokers, not the calendar.
+
+Two conclusions:
+
+1. **`socket.setdefaulttimeout()` does not work on requests.** It only applies when the
+   argument is omitted entirely, while requests explicitly stuffs that value into its own
+   call — a prescription that looks completely right and is measurably useless.
+2. **The right place is our own layer.** Wrap the loader in a bounded call
+   (`calendar.py`, `_bounded_load`): give up on time → keep the old cache → alert →
+   the main loop keeps going. And **only one load may be in flight at a time**, otherwise
+   every refresh cycle parks another thread and "stuck" becomes "stuck plus leaking."
+
+Residual risk, stated honestly: this bound covers *how long we wait*, **not DNS resolution**
+(`getaddrinfo` has no upper bound).
+
+### Failover sources: whole-table swap is the only acceptable shape
+
+Live quotes are single-source with same-source retry today (`RetryingMarketData`). If a
+second quote vendor is ever added, the five items below are **constraints**, not
+suggestions — each one maps to a real incident:
+
+| Constraint | Why |
+|---|---|
+| **Swap the whole table, never mix per symbol** | mixing puts two vendors' prices side by side in **the same comparison** ⇒ silently changes "which one to buy," unreproducible from logs afterwards |
+| **A fallback must issue its own request, never reuse a source that serves another purpose** | reuse couples two jobs' failure semantics; they also run at different cadences ⇒ you use the price "as of that moment," older the longer it runs |
+| **The fallback path must have a test that actually walks it** | an "unreachable" branch doesn't error — it just stays fail-closed forever; that is exactly why `RetryingMarketData` got tests |
+| **A failed fallback is still fail-closed — never backfill from cache or a stale snapshot** | same reason as §5: bad data is more dangerous than no data |
+| **Ship a one-switch rollback** | parameters and conventions are measured, not documented; until they are verified you must be able to fall back to single-source immediately |
+
+**One reverse conclusion on top: do not add fallbacks for historical daily bars.**
+Adjustment only rewrites history, not the current bar; splicing two vendors' adjustment
+conventions manufactures **a trend break out of nothing** — the same reason §5 gives for
+never splicing series from different sources.
+
 ---
 
 ## 5. Quote cache: better unusable than wrong

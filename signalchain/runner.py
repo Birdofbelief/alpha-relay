@@ -544,6 +544,9 @@ class Runner:
             return
         self.state.data["current_day"] = day
         self._fail_count.clear()
+        # 告警节流的跨日复位。**不是**「当日一次」的实现（那由 notify_once 自己
+        # 按日比对保证），只是防 `_sent` 随天数无界增长 —— 见 notify.py 的 reset()。
+        self.throttle.reset()
         if self.calendar.needs_new_year_refresh(now.date()):
             log.info("◇ 进入 %s，刷新交易日历（跨年必须刷新，否则会静默停摆）", day)
             self.calendar.refresh()

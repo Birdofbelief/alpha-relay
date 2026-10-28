@@ -170,7 +170,9 @@ def build_chain(
     #   于是这条日志必须把「后果」和「怎么修」都写出来 —— 否则它就是那种
     #   「进程活着、心跳还在、唯独永远没有信号」的形状，人会去怀疑策略和券商。
     if calendar is None:
-        calendar = TradingCalendar()
+        # loader_timeout 复用出站请求那个旋钮：两者都是「等一个不受我们控制的网络动作」，
+        # 分开设只会让人以为有两道防线。默认（见 calendar.DEFAULT_LOAD_TIMEOUT）兜底。
+        calendar = TradingCalendar(loader_timeout=config.http_timeout)
         if not calendar.load():
             log.error(
                 "◇ 交易日历加载失败，本进程将**把所有日期都判成非交易日** —— "

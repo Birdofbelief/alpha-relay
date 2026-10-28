@@ -24,14 +24,35 @@
 **不买不卖不止损，日志里一行异常都没有。**
 
 修复是「进入新的一天时刷新一次」。它不是可有可无的优化，是防止全年静默停摆。
+
+## 教训三：默认 loader 里有一个**没有超时**的第三方请求
+
+`akshare` 的 `tool_trade_date_hist_sina()` 内部自己发 HTTP 请求，而且**不传 timeout**。
+requests 在没传 timeout 时**没有默认上限** —— 一条半开的连接可以让它永远阻塞。
+
+⚠️ **不要用 `socket.setdefaulttimeout()` 去兜。** 这是最常见的「看起来对」的药方，
+它**对 requests 无效**：requests 会把继承来的默认值显式塞进自己的参数里，把默认值盖掉。
+本条不是推演 —— 姊妹项目实测证伪过这个药方，然后量到真正的修法。
+
+对框架来说，正确的位置不是去全局打补丁改 `requests` 的行为（库不该在 import 时
+偷偷改变整个进程的语义），而是**在自己这一层套一个有界调用**：
+到点就放弃本次刷新 → 保留旧缓存（教训一）→ 告警 → 主循环照常跑。
+**并且同一时刻只允许一个加载在飞**，否则每次重试都再挂一个线程，
+挂得越久线程越多，原本的「卡死」会变成「卡死 + 泄漏」。
 """
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date, datetime, timedelta
 from typing import Iterable
 
 log = logging.getLogger(__name__)
+
+#: 默认 loader 的等待上限（秒）。**必须有值**：见模块文档「教训三」。
+#: 与 `config.http_timeout`（`SC_HTTP_TIMEOUT`，默认 15）同值 —— 两个都是
+#: 「等一个不受我们控制的网络动作」，给两个数只会让人以为有两道防线。
+DEFAULT_LOAD_TIMEOUT = 15.0
 
 
 class CalendarError(RuntimeError):
@@ -45,8 +66,12 @@ class TradingCalendar:
     测试可以直接注入一组日期，不必联网。
     """
 
-    def __init__(self, loader=None) -> None:
+    def __init__(self, loader=None,
+                 loader_timeout: float | None = DEFAULT_LOAD_TIMEOUT) -> None:
         self._loader = loader
+        #: `None` = 不加时限（只给测试与离线注入用）。生产路径**永远不要**传 None。
+        self._loader_timeout = loader_timeout
+        self._in_flight: threading.Thread | None = None
         self._days: set[date] | None = None
         self._years: set[int] = set()
         self._last_refresh: datetime | None = None
@@ -61,6 +86,43 @@ class TradingCalendar:
         df = ak.tool_trade_date_hist_sina()
         return [d.date() if hasattr(d, "date") else d for d in df["trade_date"]]
 
+    def _bounded_load(self, loader) -> list[date]:
+        """有界地调用 loader。超时抛 `CalendarError`（由 `refresh` 转成「保留旧缓存」）。
+
+        为什么是线程 + join，而不是给 akshare 传 timeout：
+        **那个 timeout 不在我们手里** —— 它是 akshare 内部的 `requests` 调用，
+        我们只能控制「等它多久」，控制不了「它自己等多久」。
+
+        线程无法被强杀，所以超时之后那个线程会一直挂着。这可以接受，
+        但**不能每个刷新周期都再挂一个** —— 那会把「卡住」升级成「卡住 + 线程泄漏」。
+        `_in_flight` 就是为了这件事：上一次还没回来，这一次直接放弃，不再开新线程。
+        """
+        if self._loader_timeout is None:
+            return list(loader())
+
+        if self._in_flight is not None and self._in_flight.is_alive():
+            raise CalendarError(
+                "上一次日历加载仍未返回，本次放弃（不叠加新线程）")
+
+        box: dict[str, object] = {}
+
+        def run() -> None:
+            try:
+                box["days"] = list(loader())
+            except BaseException as e:  # noqa: BLE001 - 原样带回主线程再抛
+                box["error"] = e
+
+        worker = threading.Thread(target=run, name="calendar-loader", daemon=True)
+        self._in_flight = worker
+        worker.start()
+        worker.join(self._loader_timeout)
+        if worker.is_alive():
+            raise CalendarError(
+                f"日历加载超过 {self._loader_timeout:.0f}s 未返回，放弃本次刷新")
+        if "error" in box:
+            raise box["error"]  # type: ignore[misc]
+        return box["days"]  # type: ignore[return-value]
+
     def load(self) -> bool:
         """首次加载。失败返回 False（调用方应据此进入保守模式）。"""
         return self.refresh(initial=True)
@@ -73,7 +135,7 @@ class TradingCalendar:
         """
         loader = self._loader or self._default_loader
         try:
-            days = list(loader())
+            days = self._bounded_load(loader)
         except Exception as e:  # noqa: BLE001 - 加载失败是预期内情况
             self._refresh_failures += 1
             if self._days:
