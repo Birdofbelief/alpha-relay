@@ -28,7 +28,15 @@ jobs:
             python-version: "3.12"
 
     steps:
+      # ★ `fetch-depth: 0` 不能省 —— 2026-10-28 发版当天就是这里红的。
+      #   默认浅克隆**看不到标签**，`git describe --tags --exact-match HEAD` 永远答
+      #   「不在标签上」，于是 tests/test_version_source.py 把发版提交误判成
+      #   「CHANGELOG 写了版本标题却没打标签」。同一个 workflow 的 `version` job
+      #   从一开始就带了这一行，这里漏了；tag 触发的那次 run 反倒是绿的 ——
+      #   因为 tag 触发时 checkout 的 ref 本身就是 tag。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:

@@ -7,7 +7,8 @@
 
     0 = 全部一致
     1 = 有违反（打印每一条）
-    2 = 结果无效 —— **按失败处理**（比如 pyproject 解析不出来、git 状态读不到）
+    2 = 结果无效 —— **按失败处理**（比如 pyproject 解析不出来、git 状态读不到、
+        当前是浅克隆因而看不到标签）
 
 ## 三条不变式
 
@@ -112,6 +113,17 @@ def _tag_problems(root: Path, version: str) -> list[str]:
     if rc != 0:
         print("ℹ️ 不是 git 仓库 —— 跳过 tag 检查（装成包之后本来就没有 .git）")
         return []
+
+    # ★ 浅克隆里**看不到标签**，`git describe --tags` 只会答「不在标签上」。
+    #   那不是「HEAD 真的不在标签上」，是这个仓库根本没把标签拿下来 ——
+    #   于是第 3 条不变式会退化成**永远为真**，而输出看起来一模一样。
+    #   按第 2 类结果处理：**结果无效**，不是通过，也不是违反。
+    rc, shallow = _git(root, "rev-parse", "--is-shallow-repository")
+    if rc == 0 and shallow.strip() == "true":
+        raise ValueError(
+            "当前是浅克隆（shallow），看不到标签 —— tag / CHANGELOG 那条无法判断。"
+            "先 `git fetch --unshallow`（或 `git fetch --tags`）；"
+            "CI 里请给 actions/checkout 加 `fetch-depth: 0`")
 
     headings = _changelog_headings(root)
     if not headings:

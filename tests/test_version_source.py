@@ -37,8 +37,42 @@ cv = _load()
 # ------------------------------------------------------------
 # 现状：本仓库自己的文件必须过
 # ------------------------------------------------------------
+def _shallow() -> bool:
+    rc, out = cv._git(ROOT, "rev-parse", "--is-shallow-repository")
+    return rc == 0 and out.strip() == "true"
+
+
 def test_this_repository_passes():
+    # 浅克隆看不到标签 ⇒ 检查器会明确报「结果无效」。那不是仓库的错，
+    # 在这里判红只会训练人忽略这条断言。CI 的 `version` job 用 fetch-depth: 0，
+    # 那边一直在真判。（2026-10-28 发版当天 `test` job 就是栽在这上面。）
+    if _shallow():
+        pytest.skip("浅克隆看不到标签 —— 换成「结果无效」，不在这里判红")
     assert cv.check(ROOT) == []
+
+
+def test_shallow_clone_is_invalid_not_passed(monkeypatch, tmp_path):
+    """浅克隆 ⇒ **结果无效**，不是「通过」。
+
+    没有这一条，检查器在浅克隆里会把「标签看不见」当成「标签真的不存在」，
+    于是第 3 条不变式静默退化成永远为真 —— 与「永远返回 0 的检查器」同形。
+    """
+    root = tmp_path / "repo"
+    (root / "signalchain").mkdir(parents=True)
+    (root / "signalchain" / "__init__.py").write_text(
+        '__version__ = "0.2.0"\n', encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndynamic = ["version"]\n', encoding="utf-8")
+    (root / "CHANGELOG.md").write_text("## 未发布\n\n（暂无）\n", encoding="utf-8")
+
+    def fake_git(_root, *args):
+        if "--is-shallow-repository" in args:
+            return 0, "true"
+        return 0, ".git"          # 是 git 仓库：前面的门必须放行
+
+    monkeypatch.setattr(cv, "_git", fake_git)
+    with pytest.raises(ValueError, match="浅克隆"):
+        cv.check(root)
 
 
 # ------------------------------------------------------------
