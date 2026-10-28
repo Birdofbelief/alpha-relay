@@ -97,3 +97,29 @@ jobs:
           mkdir -p /tmp/elsewhere
           cd /tmp/elsewhere
           python -m signalchain.demo --quiet
+
+  # ============================================================
+  # 版本号一致性
+  # ============================================================
+  # 这一 job 防的是「版本号分叉」：`__version__` 与打包元数据各写一份、
+  # CHANGELOG 写了版本标题但代码没升号、HEAD 在标签上但 CHANGELOG 没标题。
+  # 三种都不会让程序崩，只会让「这一版到底改了什么」失去边界。
+  #
+  # ★ `fetch-depth: 0` 不能省：默认浅克隆看不到标签，`git describe --tags`
+  #   会永远答「不在标签上」，这条检查就退化成**永远为真**。
+  # ★ 本 job 只检查，**不自动打 tag、不自动发 Release** —— 发布是用户的动作。
+  version:
+    name: 版本一致性
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 检查版本单一来源与 tag / CHANGELOG 一致性
+        run: python tools/check_version.py

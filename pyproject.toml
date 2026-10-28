@@ -19,7 +19,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signal-chain"
-version = "0.1.0"
+# ★ 版本号只有**一个**手写来源：`signalchain/__init__.py` 的 `__version__`。
+#   这里不再写第二份 —— 两份版本号迟早会分叉，而分叉时的症状是
+#   `pip show` 和人看到的代码对不上。`tools/check_version.py` 在 CI 里盯着这条。
+dynamic = ["version"]
 description = "策略与信号链路解耦的可插拔框架：策略只写 decide()，链路负责取数、闸门、投递、回执、对账"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,3 +60,8 @@ include = ["signalchain*"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+
+[tool.setuptools.dynamic]
+# 从包里的字面量取版本。★ 不要让 `__version__` 运行时读 git：
+# 装成 wheel 之后没有 `.git`，那会在用户机器上炸（而且只在别人机器上炸）。
+version = { attr = "signalchain.__version__" }

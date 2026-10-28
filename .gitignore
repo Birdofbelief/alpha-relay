@@ -28,6 +28,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# 构建产物（`pip install .` / `python -m build` 会生成）
+build/
+dist/
+*.egg-info/
+.venv/
+
 # 链路运行时落盘（状态、历史缓存、传输后端目录）
 runtime/
 state/

@@ -11,6 +11,25 @@
 
 ## 未发布（`v0.1.0` 之后）
 
+### 2026-10-28 · 版本机制对齐：一个版本号一个来源
+
+- **单一来源**：`signalchain.__version__` 是唯一手写版本号；`pyproject.toml` 改为
+  `dynamic = ["version"]`（`tool.setuptools.dynamic.version = {attr = ...}`）。
+  两份版本号迟早分叉，而分叉时的症状是 `pip show` 和人看到的代码对不上
+- **新增 `tools/check_version.py`**，三条不变式：
+  ① `[project]` 里不许再有第二份 `version`，且 `dynamic` 必须含 `version`；
+  ② 本机装了包时 `importlib.metadata` 必须等于 `__version__`；
+  ③ HEAD 在 `vX.Y.Z` 标签上 ⇒ `__version__` 与 CHANGELOG 的 `## vX.Y.Z` 标题都要对上；
+  不在标签上 ⇒ CHANGELOG 顶部必须仍是「未发布」
+- **CI 新增 `version` job**（`fetch-depth: 0` —— 浅克隆看不到标签，那条检查会退化成
+  **永远为真**）。只检查，**不自动打 tag、不自动发 Release**
+- **新增 `docs/RELEASING.md`**：版本号规则、发版提交、附注 tag、`push` 与
+  `push origin vX.Y.Z` 必须分开、发完从远端回读验证
+- ⚠️ **版本号本身没动**（仍是 `0.1.0`）。下一个版本号（建议 `0.2.0`，因为本段含行为变化）
+  由仓库所有者在发版当天确认 —— 换号是发布动作，不是这次机制对齐的一部分
+
+测试：346 → **356**。
+
 ### 2026-10-28 · README 首屏改稿：先讲清楚「哪一段归谁」
 
 - 首屏原来先出现 `decide(ctx)`、gates、transport 这些词，读者还不知道这条路有哪几段

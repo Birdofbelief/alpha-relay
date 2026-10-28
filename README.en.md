@@ -694,6 +694,7 @@ More trade-offs in [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) (Chinese; Engl
 | [`docs/DESIGN_NOTES.en.md`](docs/DESIGN_NOTES.en.md) | English translation of the above (for readers without Chinese; **the Chinese version wins on any discrepancy**) |
 | [`docs/SANITIZATION.md`](docs/SANITIZATION.md) | the sanitization checklist + scanner usage + **how to build a denylist** |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | migrating from a single-file script; also **when not to migrate** |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | **release checklist**: where the version lives, how to tag, what to push, how to verify afterwards (Chinese) |
 
 The reference docs are written in Chinese. This README and `docs/DESIGN_NOTES.en.md` are the English
 entry points.

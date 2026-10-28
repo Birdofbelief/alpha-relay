@@ -678,6 +678,7 @@ cp .env.example .env      # 然后填自己的值；.env 已被 .gitignore 挡�
 | [`docs/DESIGN_NOTES.en.md`](docs/DESIGN_NOTES.en.md) | 上一份的英文翻译（供不开中文的读者扫读；**有出入以中文版为准**） |
 | [`docs/SANITIZATION.md`](docs/SANITIZATION.md) | 脱敏清单 + 扫描器用法 + **黑名单怎么建** |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | 从「单文件脚本」迁到本框架的路径；也写了**什么时候不该迁** |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | **发布清单**：版本号在哪、tag 怎么打、推哪些、发完怎么回读验证 |
 | [`CHANGELOG.md`](CHANGELOG.md) | **变更记录**（在仓库根，不在 `docs/`）：每个阶段改了什么、为什么改 |
 
 ## 环境
