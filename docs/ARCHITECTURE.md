@@ -92,7 +92,7 @@ tests/                        含 golden 线格式、传输契约、端到端接
    │     ├─ strategy.decide(ctx)           ★ 纯函数：只能读 ctx，只能返回 Signal
    │     ├─ gates.apply(signals, ctx.data) → (放行, 否决理由)
    │     ├─ stores.signals.append(sig)     逐条投递
-   │     ├─ stores.signals.prune(...)      清理队列（三条规则：终态删、跨日卖删、跨日买留）
+   │     ├─ stores.signals.prune(...)      清理队列（两条规则：曾到过终态删、跨日一律删）
    │     ├─ strategy.on_finish(ctx, result)
    │     ├─ _persist_strategy_state()
    │     └─ finally: _report_quality() + beat(严重度)

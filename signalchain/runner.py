@@ -247,9 +247,10 @@ class Runner:
                 if self.stores.signals.append(sig):
                     result.written += 1
 
-            # 顺手清理队列（幂等且便宜），避免队列长期只增不减
+            # 顺手清理队列（幂等且便宜），避免队列长期只增不减。
+            # ★ 传「曾经到过终态」而不是最新一条回执：见 store.py 的 prune 注释。
             removed = self.stores.signals.prune(
-                self.stores.executions.index(), now.strftime("%Y-%m-%d"))
+                self.stores.executions.terminal_ids(), now.strftime("%Y-%m-%d"))
             if removed:
                 log.info("○ 队列清理 %d 条", removed)
 

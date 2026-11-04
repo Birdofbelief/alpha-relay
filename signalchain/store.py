@@ -36,14 +36,13 @@ from .models import (
     CH_HEARTBEAT,
     CH_POSITIONS,
     CH_SIGNALS,
-    EXEC_FILLED,
-    EXEC_CANCELED,
     Heartbeat,
     PositionSnapshot,
     Signal,
     WireFormatError,
     executions_to_index,
     payload_to_signals,
+    terminal_signal_ids,
 )
 from .transport.base import SingleWriterGuard, TransportError
 
@@ -93,37 +92,38 @@ class SignalQueue:
             items = items[-self._max:]
         return self._t.write(CH_SIGNALS, items)
 
-    def prune(self, exec_index: dict[str, Any] | None, today: str) -> int:
-        """清理队列，返回删掉的条数。规则有三条，**每条都有理由**：
+    def prune(self, terminal_ids: set[str] | None, today: str) -> int:
+        """清理队列，返回删掉的条数。规则有两条，**每条都有理由**：
 
-        1. **有终态回执的删掉**（filled 成交 / canceled 撤单放弃）。
+        1. **曾经到过终态的回执的删掉**（filled 成交 / canceled 撤单放弃）。
            注意 `submitted`（已下单、结果未知）**不删** —— 那不是终态，
            删了就等于单子还挂着、你却忘了它。
-        2. **跨日的卖单删掉**。卖出信号有当日时效：隔天再执行等于用昨天的价
-           去卖今天的持仓，价格早已不可比。
-        3. **跨日的买单保留**。这是刻意的：昨天想买没买成，今天仍可重试；
-           而且执行端的 `signal_id` 幂等键会拦住重复下单，保留是安全的。
+           ★ 判定用「曾经出现过终态」，不是「最新一条是终态」：执行端可能在
+           终态之后补写一条非终态（次日重试写 `skipped`），只看最新一条会把
+           已经结束的单重新判成没结束，见 `models.terminal_signal_ids`。
+        2. **跨日的一律删掉，买卖同规则**。信号是「某个时刻的决定」，隔天再执行
+           等于拿昨天的判断去下今天的单：卖出是用昨天的价卖今天的持仓；买入则
+           可能把刚止损的票按当前价买回来。
+           ★ 这里曾经**刻意保留跨日买单**，理由是「signal_id 幂等能拦住重复下单」。
+           那个理由只对终态成立：执行端的 `skipped` / `failed` 都不是终态，
+           一条没成交的买单会永久留在队列里，等某天资金 / 持仓腾出来被执行。
+           （来源：2026-11-01 实盘链路 v7.1 的孤儿买入事故。）
         """
         items = self.raw()
         if not items:
             return 0
-        exec_index = exec_index or {}
+        terminal_ids = terminal_ids or set()
         keep: list[dict[str, Any]] = []
         removed = 0
         for item in items:
             sid = item.get("id", "")
-            rec = exec_index.get(sid)
-            # `index()` 给的是 `Execution` **对象**（不是原始 dict）。
-            # 这里曾经写成 `rec.get("status")` —— 一个只在「队列非空且该信号有回执」
-            # 时才触发的 AttributeError。这类 bug 的危险在于它在最简单的路径上不出现。
-            if rec is not None and rec.status in (EXEC_FILLED, EXEC_CANCELED):
+            if sid in terminal_ids:
                 removed += 1
                 continue
-            if item.get("action") == "sell":
-                sig_day = str(item.get("time", ""))[:10]
-                if sig_day and sig_day != today:
-                    removed += 1
-                    continue
+            sig_day = str(item.get("time", ""))[:10]
+            if sig_day and sig_day != today:
+                removed += 1
+                continue
             keep.append(item)
         if removed:
             self._t.write(CH_SIGNALS, keep)
@@ -142,8 +142,17 @@ class ExecutionLog:
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
     def index(self) -> dict[str, Any]:
-        """`{signal_id: 最新一条回执}`。"""
+        """`{signal_id: 最新一条回执}`。回答「这笔单现在是什么状态」。"""
         return executions_to_index(self._t.read(CH_EXECUTIONS))
+
+    def terminal_ids(self) -> set[str]:
+        """`{曾经到过终态的 signal_id}`。回答「这笔单结束过没有」。
+
+        与 `index()` 不能互相替代：一笔单可能先 `filled`、之后又追加一条
+        `skipped`（次日重试时执行端写的）。`index()` 会把它当成非终态，
+        `terminal_ids()` 仍然认它是终态。队列清理必须用后者。
+        """
+        return terminal_signal_ids(self._t.read(CH_EXECUTIONS))
 
     def append(self, execution: Any) -> bool:
         """追加一条回执。

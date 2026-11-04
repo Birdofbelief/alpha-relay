@@ -17,7 +17,6 @@ from signalchain.models import (
     Execution,
     PositionSnapshot,
     Signal,
-    executions_to_index,
 )
 from signalchain.store import SIGNAL_QUEUE_MAX, SignalQueue, Stores
 from signalchain.transport.base import Role, SingleWriterGuard
@@ -98,7 +97,7 @@ def test_default_cap_matches_production():
 
 
 # ------------------------------------------------------------
-# 清理规则：三条规则各有各的理由
+# 清理规则：两条规则各有各的理由
 # ------------------------------------------------------------
 def _seed(producer) -> SignalQueue:
     q = SignalQueue(producer)
@@ -115,8 +114,7 @@ def test_prune_removes_terminally_executed(producer):
     """
     q = _seed(producer)
     buy_id = next(i["id"] for i in q.raw() if i["action"] == "buy")
-    index = executions_to_index([_exec(buy_id, "filled").to_dict()])
-    assert q.prune(index, TODAY) == 1
+    assert q.prune({buy_id}, TODAY) == 1
     assert [i["action"] for i in q.raw()] == ["sell"]
 
 
@@ -128,27 +126,49 @@ def test_prune_keeps_submitted(producer):
     「队列非空且该信号有回执」时触发，所以空队列的测试完全测不出来。
     """
     q = _seed(producer)
-    buy_id = next(i["id"] for i in q.raw() if i["action"] == "buy")
-    index = executions_to_index([_exec(buy_id, "submitted").to_dict()])
-    assert q.prune(index, TODAY) == 0
+    assert q.prune(set(), TODAY) == 0
     assert len(q.raw()) == 2
 
 
-def test_prune_drops_cross_day_sells_but_keeps_cross_day_buys(producer):
-    """跨日：卖单删、买单留。这是刻意的不对称。
+def test_prune_drops_all_cross_day_signals(producer):
+    """跨日：买卖**一律删**。
 
-    卖出信号有**当日时效**：隔天再执行等于用昨天的价去卖今天的持仓，
-    价格早已不可比。而买入信号隔天仍然有效 —— 而且执行端的 signal_id
-    幂等键会拦住重复下单，所以保留是安全的。
+    信号是「某个时刻的决定」，隔天再执行等于拿昨天的判断去下今天的单。
+    这里曾经刻意保留跨日买单，理由是「signal_id 幂等能拦住重复下单」——
+    那个理由只对终态成立。`skipped` / `failed` 都不是终态，一条没成交的
+    买单会永久留在队列里，等某天资金腾出来被当成新信号执行
+    （2026-11-01 实盘链路的孤儿买入事故）。
     """
     q = _seed(producer)
-    removed = q.prune({}, TODAY)          # 队列里的两条都记的是 YESTERDAY 吗？不是
-    # FIXED_NOW 是 2026-09-18，所以传 TODAY 时它们都算当日，不该被删
-    assert removed == 0 and len(q.raw()) == 2
+    # FIXED_NOW 是 2026-09-18，所以传 TODAY 时两条都算当日，不该被删
+    assert q.prune(set(), TODAY) == 0 and len(q.raw()) == 2
 
-    # 换成「今天是 09-19」→ 两条都跨日 → 只删卖单
-    assert q.prune({}, "2026-09-19") == 1
-    assert [i["action"] for i in q.raw()] == ["buy"]
+    # 换成「今天是 09-19」→ 两条都跨日 → 都删
+    assert q.prune(set(), "2026-09-19") == 2
+    assert q.raw() == []
+
+
+def test_prune_uses_ever_terminal_not_latest(tmp_path):
+    """终态之后迟到的非终态，不会把已结束的单重新判成「没结束」。
+
+    执行端可能在旧信号上补写一条 `skipped`（次日重试时），而回执是追加的。
+    只看最新一条（`index()`），这条已经成交的单会被判成非终态、永远留在队列里；
+    用 `terminal_ids()` 才看得到「它曾经到过终态」。
+    """
+    producer = SingleWriterGuard(FileTransport(tmp_path), Role.PRODUCER)
+    executor = SingleWriterGuard(FileTransport(tmp_path), Role.EXECUTOR)
+    q = SignalQueue(producer)
+    q.append(Signal(code=CLEAN_CODES[0], action=ACTION_BUY, created_at=FIXED_NOW))
+    sid = q.raw()[0]["id"]
+
+    log = Stores(executor).executions
+    log.append(_exec(sid, "filled"))
+    log.append(_exec(sid, "skipped"))            # 终态之后迟到的一条
+    assert log.index()[sid].status == "skipped"  # 最新一条是非终态
+    assert sid in log.terminal_ids()             # 但它曾经到过终态
+
+    assert q.prune(log.terminal_ids(), TODAY) == 1
+    assert q.raw() == []
 
 
 def test_prune_on_empty_queue_is_a_noop(producer):
@@ -157,12 +177,12 @@ def test_prune_on_empty_queue_is_a_noop(producer):
     顺手断言「不写盘」：空跑一次就重写一遍文件，会在 gist 上白白消耗一次
     PATCH 配额 —— 而配额是要省着用的。
     """
-    assert SignalQueue(producer).prune({}, TODAY) == 0
+    assert SignalQueue(producer).prune(set(), TODAY) == 0
     assert producer.read("signals") is None
 
 
-def test_prune_accepts_none_index(producer):
-    """传 None 当作「没有回执」处理，不抛异常。"""
+def test_prune_accepts_none_terminal_ids(producer):
+    """传 None 当作「没有终态回执」处理，不抛异常。"""
     q = _seed(producer)
     assert q.prune(None, TODAY) == 0
 
@@ -195,7 +215,7 @@ def test_rmw_preserves_unknown_fields(producer):
     kept["future_field"] = {"nested": [1, 2, 3]}         # 模拟对端新加的字段
     producer.write("signals", raw)
 
-    assert q.prune({}, TODAY) == 1                        # 删掉卖单 → 触发写回
+    assert q.prune(set(), TODAY) == 1                     # 删掉卖单 → 触发写回
 
     after = q.raw()
     assert len(after) == 1

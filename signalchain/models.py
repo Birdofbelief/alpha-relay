@@ -609,3 +609,47 @@ def executions_to_index(payload: Any, keep_latest: bool = True) -> dict[str, Exe
                 f"（signal_id={sid!r}，status={item.get('status')!r}）："
                 f"{type(e).__name__}: {e}") from e
     return index
+
+
+def terminal_signal_ids(payload: Any) -> set[str]:
+    """所有**曾经出现过终态回执**的 signal_id。
+
+    与 `executions_to_index` 的分工：那个回答「这笔单现在是什么状态」，
+    取每个 id 的最新一条；这个回答「这笔单有没有结束过」—— 只要出现过
+    一次 `filled` / `canceled` 就算数。
+
+    ★ 为什么不能只看最新一条：回执是追加的，执行端在终态之后仍可能补写
+    非终态记录（例如次日重试时写一条 `skipped`）。只看最新一条，已经成交 /
+    已撤的单会被重新判成「没结束」，队列于是永远清不掉；而队列里一条跨日的
+    买单，某天资金腾出来就可能被当作新信号再执行一次。
+
+    错误语义与 `executions_to_index` 保持一致：不是 dict 的算噪声跳过，
+    dict 但认不出归属 / 解析不了的一律抛 `WireFormatError`（回执绝不能
+    静默丢，否则记账里这笔就等于「没执行过」）。
+    """
+    ids: set[str] = set()
+    if not isinstance(payload, list):
+        return ids
+    for position, item in enumerate(payload):
+        if not isinstance(item, dict):
+            continue
+        sid = item.get("signal_id")
+        if not sid:
+            raise WireFormatError(
+                f"回执列表第 {position} 条没有 signal_id"
+                f"（status={item.get('status')!r}）—— 无法归属到任何信号")
+        status = item.get("status")
+        if status not in EXEC_STATUSES:
+            log.warning("回执 %s 的状态 %r 不在已知取值内 %s —— "
+                        "按非终态处理（不会被当成已成交）",
+                        sid, status, sorted(EXEC_STATUSES))
+        try:
+            execution = Execution.from_dict(item)
+        except Exception as e:  # noqa: BLE001 - 统一转成可诊断的线格式错误
+            raise WireFormatError(
+                f"回执列表第 {position} 条无法解析"
+                f"（signal_id={sid!r}，status={status!r}）："
+                f"{type(e).__name__}: {e}") from e
+        if execution.is_terminal:
+            ids.add(sid)
+    return ids

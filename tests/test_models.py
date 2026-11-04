@@ -16,6 +16,7 @@ from signalchain.models import (
     ACTION_SELL,
     EXEC_CANCELED,
     EXEC_FILLED,
+    EXEC_SKIPPED,
     EXEC_SUBMITTED,
     Execution,
     Heartbeat,
@@ -25,6 +26,7 @@ from signalchain.models import (
     fmt_dt,
     payload_to_signals,
     signals_to_payload,
+    terminal_signal_ids,
     to_bare,
     to_jq,
 )
@@ -220,6 +222,34 @@ def test_executions_index_warns_on_an_unknown_status(caplog):
     assert index["s1"].status == "filld"
     assert index["s1"].is_terminal is False
     assert any("filld" in r.getMessage() for r in caplog.records)
+
+
+def test_terminal_signal_ids_keeps_a_signal_that_was_once_terminal():
+    """只要出现过一次终态，就算结束过 —— 哪怕最新一条是非终态。
+
+    回执是追加的：`filled` 之后执行端仍可能补写 `skipped`（次日重试）。
+    `executions_to_index` 看最新一条会答「没结束」，队列于是永远清不掉；
+    `terminal_signal_ids` 答「结束过」，这才是清理规则要的。
+    """
+    payload = [
+        {"signal_id": "s1", "code": CLEAN_CODES[0], "action": ACTION_BUY,
+         "status": EXEC_FILLED},
+        {"signal_id": "s1", "code": CLEAN_CODES[0], "action": ACTION_BUY,
+         "status": EXEC_SKIPPED},
+        {"signal_id": "s2", "code": CLEAN_CODES[0], "action": ACTION_BUY,
+         "status": EXEC_SUBMITTED},
+    ]
+    assert executions_to_index(payload)["s1"].is_terminal is False
+    assert terminal_signal_ids(payload) == {"s1"}
+
+
+def test_terminal_signal_ids_ignores_only_non_dicts():
+    """与回执索引同一条线：非 dict 是噪声；dict 但没有 signal_id 是坏回执，必须抛。"""
+    from signalchain.models import WireFormatError
+
+    assert terminal_signal_ids([None, "字符串", 42]) == set()
+    with pytest.raises(WireFormatError):
+        terminal_signal_ids([{"status": EXEC_FILLED}])
 
 
 # ------------------------------------------------------------
