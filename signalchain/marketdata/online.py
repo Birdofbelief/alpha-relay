@@ -113,6 +113,9 @@ class OnlineMarketData:
         self.snapshot_ttl = snapshot_ttl
         self.max_snapshot_age = max_snapshot_age
         self._snapshot: tuple[datetime, pd.DataFrame] | None = None
+        #: 这份快照**请求过**的裸代码。用来区分「源没返回这一行」与
+        #: 「这次根本没问过它」—— 两者对调用方的含义相反，见 `quotes`。
+        self._snapshot_requested: set[str] = set()
         #: 每只标的最近一次的复权来源：`qfqday`（已复权）/ `day`（未修正）
         self.sources: dict[str, str] = {}
         self.stats = {"quote_calls": 0, "history_calls": 0, "stale_snapshot_drops": 0}
@@ -122,9 +125,24 @@ class OnlineMarketData:
     def quotes(self, codes: Sequence[str]) -> QuoteBatch:
         self.stats["quote_calls"] += 1
         codes = list(codes)
+        wanted = {to_bare(c) for c in codes}
         df = self._snapshot_or_none()
         if df is None:
             df = self._fetch_snapshot(codes)
+            if df is not None:
+                self._snapshot_requested = set(wanted)
+        elif not wanted <= self._snapshot_requested:
+            # ★ 快照还在 TTL 内，但**没问过这次要的代码**。
+            # 原实现直接拿旧表比对，新标的必然 missing —— 而且 TTL 内
+            # 永远不会补请求，表现为「这只标的行情一直拿不到」，
+            # 排查时极易误判成上游不提供它。
+            # 已经问过却没返回的行（退市/停牌数据缺失）不在这里重复请求：
+            # 那种情况下重取也只是浪费配额，结果不会变。
+            fetch_codes = sorted(self._snapshot_requested | wanted)
+            fresh = self._fetch_snapshot(fetch_codes)
+            if fresh is not None:
+                df = fresh
+                self._snapshot_requested = set(fetch_codes)
         batch = QuoteBatch(fetched_at=datetime.now())
         if df is None or df.empty:
             # 整体取不到 → 全部算缺失。调用方（闸门）会据此整体停手。
@@ -165,6 +183,7 @@ class OnlineMarketData:
         日志显示「重试 2 次」，实际一次网络请求都没再发。
         """
         self._snapshot = None
+        self._snapshot_requested.clear()
 
     def _snapshot_or_none(self) -> pd.DataFrame | None:
         """取出未过期的快照；过期则返回 None。
@@ -189,6 +208,7 @@ class OnlineMarketData:
             log.warning("× 现有行情快照已过期（%.0f 秒前，上限 %.0f），不使用",
                         age, self.max_snapshot_age)
             self._snapshot = None
+            self._snapshot_requested.clear()
         return None
 
     def _fetch_snapshot(self, codes: Sequence[str]) -> pd.DataFrame | None:
@@ -373,6 +393,18 @@ class RetryingMarketData:
             except MarketDataError as e:
                 last = e
                 if attempt < self.attempts:
+                    # ★ 与 `quotes` 共用同一个硬截止。
+                    # 历史是按标的逐只取的：一只失败后每只都睡一次 5 秒，
+                    # 几十只就足以把 14:57 的窗口整个耗光 —— 而且失败的是
+                    # **一只**，代价却是**整轮**错过。截止一到就立刻抛给上层，
+                    # 由它按 fail-closed 处理。
+                    deadline = self._deadline()
+                    if deadline is not None and datetime.now() + \
+                            timedelta(seconds=self.interval) >= deadline:
+                        self.stats["aborted"] += 1
+                        log.error("× 已到历史重试截止时间（%s），停止重试: %s",
+                                  deadline.strftime("%H:%M"), code)
+                        break
                     log.warning("! %s 历史获取失败，%.0f 秒后重试: %s",
                                 code, self.interval, e)
                     time.sleep(self.interval)

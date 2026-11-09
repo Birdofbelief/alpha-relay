@@ -126,6 +126,27 @@ def pt_to_jq(code: str) -> str:
     return code.replace(".SS", ".XSHG").replace(".SZ", ".XSHE")
 
 
+#: 线上时间字段的两种真实形状（`str(datetime)` 带不带微秒）。
+_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
+
+
+def parse_wire_time(raw: Any) -> datetime | None:
+    """解析 `time` / `update_time` / `last_time`。认不出就返回 None。
+
+    这些字段的写入方不一定是我们：线上执行端用 `str(datetime)`（可能带微秒），
+    心跳被硬解析器要求截断到秒，手工构造的测试对象则两种都可能。
+    读的一侧必须**宽容**，否则一个格式差异就会让整条链把它当成「没有时间」。
+    """
+    if not raw:
+        return None
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(str(raw), fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def fmt_dt(dt: datetime) -> str:
     """`signals.time` / `executions.time` / `positions.update_time` 的时间格式。
 
@@ -240,22 +261,13 @@ class Signal:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Signal":
-        raw_time = d.get("time")
-        created = None
-        if raw_time:
-            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-                try:
-                    created = datetime.strptime(str(raw_time), fmt)
-                    break
-                except ValueError:
-                    continue
         return cls(
             code=d.get("code", ""),
             action=d.get("action", ""),
             amount=d.get("amount", 0),
             price=d.get("price", 0.0),
             signal_type=d.get("signal_type", "normal"),
-            created_at=created,
+            created_at=parse_wire_time(d.get("time")),
             sig_id=d.get("id"),
             processed=bool(d.get("processed", False)),
         )
@@ -340,6 +352,10 @@ class Execution:
             order_id=d.get("order_id", ""),
             price=float(d.get("price", 0.0) or 0.0),
             amount=int(d.get("amount", 0) or 0),
+            # ★ 别漏了 time。`to_dict()` 明明写了它，原实现读回来却丢掉 ——
+            # 往返一次 created_at 变成 None，审计时「这笔单是什么时候成交的」
+            # 就只剩日志可查了。
+            created_at=parse_wire_time(d.get("time")),
         )
 
     @property
@@ -479,14 +495,7 @@ class PositionSnapshot:
         契约里必须写明，否则「为什么持仓买入日期全是今天」
         会变成一个查不出来的问题。
         """
-        if not raw:
-            return None
-        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(str(raw), fmt)
-            except ValueError:
-                continue
-        return None
+        return parse_wire_time(raw)
 
     @property
     def bare_codes(self) -> list[str]:

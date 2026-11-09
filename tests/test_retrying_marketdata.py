@@ -123,6 +123,43 @@ def test_history_is_retried_and_then_propagates():
         retry.history("510050", 1)
 
 
+def test_history_stops_at_the_deadline_instead_of_sleeping_through_it():
+    """★ 历史是**逐只**取的：失败一只睡 5 秒，几十只就能耗光整个窗口。
+
+    原实现只给 `quotes` 接了截止，`history` 没有 —— 于是一次历史源抖动
+    会让每只标的最多睡 `attempts × interval`，而 14:57 的窗口只有几分钟。
+    """
+    class AlwaysFailing:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def quotes(self, codes):
+            return _complete()
+
+        def history(self, code, bars):
+            self.calls += 1
+            raise MarketDataError("历史源挂了")
+
+        def describe(self) -> str:
+            return "failing"
+
+    inner = AlwaysFailing()
+    retry = RetryingMarketData(
+        inner, attempts=5, interval=5.0,
+        deadline=lambda: datetime.now() + timedelta(seconds=1),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(MarketDataError):
+        retry.history("510050", 10)
+    elapsed = time.monotonic() - started
+
+    assert inner.calls == 1, "已经到截止时间就不该再重试"
+    assert retry.stats["aborted"] == 1
+    assert retry.stats["retries"] == 0
+    assert elapsed < 1.0
+
+
 def test_describe_mentions_the_inner_source():
     retry = RetryingMarketData(ScriptedMarket([_complete()]), attempts=2)
     assert "scripted" in retry.describe()

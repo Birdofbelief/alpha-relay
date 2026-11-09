@@ -105,7 +105,14 @@ def _build_builtin(kind: str, config: Config) -> Transport:
         if not (config.gist_id and config.github_token):
             log.error("× 配置为 gist 后端但凭据不全，**降级为文件后端**（不带着空凭据发请求）")
             return FileTransport(config.channel_dir)
-        return GistTransport.from_env()
+        # ★ 用 **config 里已经解析好**的凭据，不要回头再读一次环境变量。
+        # 原实现是 `GistTransport.from_env()`：`Config.from_env` 明明已经
+        # 把 SC_GIST_ID / SC_GITHUB_TOKEN 读进来了，这里却绕过它重新读 env。
+        # 后果是「显式构造 Config(gist_id=..., github_token=...)」—— 文档里
+        # 推荐的另一种装配方式 —— 校验通过了，构造时却抛「缺少 Gist 凭据」。
+        # 顺带让 SC_HTTP_TIMEOUT 在这个后端上真正生效。
+        return GistTransport(config.gist_id, config.github_token,
+                             timeout=config.http_timeout)
     if kind == "null":
         return NullTransport()
     return FileTransport(config.channel_dir)

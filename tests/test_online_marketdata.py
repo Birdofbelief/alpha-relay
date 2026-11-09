@@ -10,6 +10,10 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
+import pytest
+
 from signalchain.marketdata.base import MarketDataError, Quote, QuoteBatch
 from signalchain.marketdata.online import (
     OnlineMarketData,
@@ -56,6 +60,76 @@ def test_quotes_accepts_suffixed_codes(monkeypatch):
     assert set(batch.quotes) == {"510050.XSHG"}
     assert batch.quotes["510050.XSHG"].price == 1.010
     assert batch.missing == []
+
+
+# ------------------------------------------------------------
+# 快照缓存必须按「问过哪些代码」来判断，不能只看 TTL
+# ------------------------------------------------------------
+class _TextResp:
+    status_code = 200
+    encoding = "gbk"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def _sina_lines(url: str) -> str:
+    rows = []
+    if "sh510050" in url:
+        rows.append('var hq_str_sh510050="50ETF,1.000,1.000,1.010,1.020,0.990";')
+    if "sz159919" in url:
+        rows.append('var hq_str_sz159919="300ETF,4.000,4.000,4.100,4.200,3.900";')
+    return "\n".join(rows) + "\n"
+
+
+def test_a_new_code_forces_one_refetch_within_the_ttl(monkeypatch):
+    """★ TTL 内的快照只覆盖**上次问过的代码**。
+
+    原实现只要快照没过期就直接拿它比对：第一次问 510050、第二次问 159919 时，
+    159919 **必然 missing，而且 TTL 内永远不会补请求** —— 表现为「这只标的
+    行情一直拿不到」，排查时极易误判成上游不提供它。更糟的是它会一路
+    走到 quote 闸门，把整轮判成「行情不可信」。
+    """
+    from signalchain.marketdata import online
+
+    seen: list[str] = []
+
+    def fake_get(url, **kwargs):
+        seen.append(url)
+        return _TextResp(_sina_lines(url))
+
+    monkeypatch.setattr(online.requests, "get", fake_get)
+    om = OnlineMarketData(snapshot_ttl=300.0)
+
+    first = om.quotes(["510050"])
+    assert first.ok and len(seen) == 1
+
+    second = om.quotes(["159919"])
+    assert second.ok, f"新代码在 TTL 内被当成 missing: {second.missing}"
+    assert len(seen) == 2, "新代码必须触发一次补请求"
+    assert "sz159919" in seen[1]
+
+    # 已经问过的代码不再重复请求 —— 配额是有限的
+    third = om.quotes(["159919"])
+    assert third.ok and len(seen) == 2, "同一批已问过的代码不该在 TTL 内反复重取"
+
+
+def test_a_requested_but_absent_code_is_not_refetched_every_call(monkeypatch):
+    """问过、但源确实没返回的那一行：不重复请求（重取结果不会变）。"""
+    from signalchain.marketdata import online
+
+    seen: list[str] = []
+
+    def fake_get(url, **kwargs):
+        seen.append(url)
+        return _TextResp('var hq_str_sh510050="50ETF,1,1,1.01,1.02,0.99";\n')
+
+    monkeypatch.setattr(online.requests, "get", fake_get)
+    om = OnlineMarketData(snapshot_ttl=300.0)
+
+    assert om.quotes(["159919"]).missing == ["159919"]
+    assert om.quotes(["159919"]).missing == ["159919"]
+    assert len(seen) == 1, "已经问过且确实没有的代码不该在 TTL 内反复重取"
 
 
 # ------------------------------------------------------------

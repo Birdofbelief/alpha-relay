@@ -466,3 +466,20 @@ def test_receipts_without_a_signal_id_raise():
         executions_to_index([{"status": EXEC_FILLED}, "垃圾"])
 
     assert "第 0 条" in str(info.value)
+
+
+def test_execution_round_trip_keeps_its_time():
+    """`to_dict()` 写了 `time`，`from_dict()` 必须读回来。
+
+    原实现只写了不读：往返一次 `created_at` 变成 None，审计时
+    「这笔单什么时候成交的」就只剩日志可查（而日志未必留得下来）。
+    """
+    when = FIXED_NOW.replace(microsecond=123456)
+    original = Execution(signal_id="s1", code=CLEAN_CODES[0],
+                         action=ACTION_BUY, status=EXEC_FILLED,
+                         order_id="o1", price=1.01, amount=100,
+                         created_at=when)
+
+    back = Execution.from_dict(original.to_dict())
+
+    assert back.created_at == when

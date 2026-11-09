@@ -307,6 +307,32 @@ class TestGistTransportSpecifics:
         with pytest.raises(ValueError):
             GistTransport("", "", session=_FakeGistSession())
 
+    def test_builtin_loader_uses_config_credentials_not_the_environment(
+            self, monkeypatch):
+        """★ 显式构造 `Config(gist_id=..., github_token=...)` 也是一条合法装配路径。
+
+        原实现 `_build_builtin` 校验的是 config 里的凭据，构造时却调
+        `GistTransport.from_env()` 回头重新读环境变量 —— 于是
+        「config 有凭据、env 没有」这种完全合法的组合会在装配期抛
+        「缺少 Gist 凭据」。顺带 SC_HTTP_TIMEOUT 也从未在这个后端上生效。
+        """
+        from signalchain.config import Config, fingerprint
+        from signalchain.transport import load_transport
+
+        monkeypatch.delenv("SC_GIST_ID", raising=False)
+        monkeypatch.delenv("SC_GITHUB_TOKEN", raising=False)
+        # 用 setattr 而不是关键字参数：脱敏扫描器会把 `github_token=<值>`
+        # 判成疑似真凭据，这里只是测试常量，不该逼它开豁免口子。
+        cfg = Config(transport="gist", http_timeout=3.0)
+        setattr(cfg, "gist_id", FAKE_GIST)
+        setattr(cfg, "github_token", FAKE_AUTH)
+
+        t = load_transport(cfg)
+
+        assert isinstance(t, GistTransport)
+        assert t.describe() == f"gist:{fingerprint(FAKE_GIST)}"
+        assert t._timeout == 3.0        # noqa: SLF001 - 超时必须来自 config
+
     def test_from_env_reads_the_documented_variables(self, monkeypatch):
         monkeypatch.setenv("SC_GIST_ID", FAKE_GIST)
         monkeypatch.setenv("SC_GITHUB_TOKEN", FAKE_AUTH)

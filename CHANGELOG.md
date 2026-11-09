@@ -11,6 +11,56 @@
 
 ## 未发布（`v0.2.0` 之后）
 
+### 2026-11-09 · 第二轮审计：调度静默不触发、快照覆盖、显式 Config
+
+同一轮审计的第二遍，专找「**代码看起来完全正常、任务却永远不会跑**」的形状。
+
+**调度**
+
+- `Runner.schedule` 在构造期归一化并校验：
+  - `"9:15"` 补齐成 `"09:15"`。原来按字符串比较时 `"10:00" < "9:15"`，
+    这个任务**当天永远不会触发**，且没有任何日志。
+  - 时刻不是 `HH:MM`、任务名为空、任务名重复 → 装配期直接 `ValueError`。
+    执行状态按名字记录，同名的第二个时刻永远不会触发。
+- `schedule=[]` 不再被 `or` 悄悄换成默认四个任务。`build_file_chain` 传的
+  空表是「没有定时任务」，只在 `schedule=None` 时才用默认表。
+
+**行情**
+
+- `OnlineMarketData` 的进程内快照现在记录**问过哪些代码**：TTL 内来了
+  一个没问过的代码会补一次请求（并保留已覆盖的代码）。原实现直接拿旧表
+  比对，新标的必然 missing，而且 TTL 内永远不会补请求。
+  已经问过、源确实没返回的代码仍不重复请求（不浪费配额）。
+- `RetryingMarketData.history` 也接上硬截止。历史是逐只取的：原来一只失败
+  就睡 `attempts × interval`，几十只足以耗光 14:57 的窗口。
+
+**装配与配置**
+
+- `load_transport` 的 gist 分支改用 `config.gist_id` / `config.github_token` /
+  `config.http_timeout`，不再回头调 `from_env()`。原实现下
+  「显式构造 `Config(gist_id=..., github_token=...)`」会在校验通过后
+  于构造期抛「缺少 Gist 凭据」；`SC_HTTP_TIMEOUT` 也从未在这个后端生效。
+- `Config.__post_init__` 把 `runtime_dir` 归一成 `Path`、`role` 转小写、
+  `limit_20_codes` 接受逗号字符串。原来 `Config(runtime_dir="...")` 会在
+  第一次 `/` 运算时抛一句离原因很远的 `TypeError`。
+
+**状态文件**
+
+- `_AtomicState._load` 要求顶层是对象；`[]` / `""` / `0` 不再被静默当成空状态
+  （非空列表会让 `.setdefault` 直接抛 `AttributeError`）。
+  `strategy_state` 不是对象时忽略并按空启动。
+- `_AtomicState.save` 返回成败，并接住 `TypeError`/`ValueError`
+  （策略塞了 JSON 表示不了的值）。`_persist_strategy_state` 只在**真的写盘成功**
+  后才清 `dirty`，写失败下一轮会重试 —— 原来先清后写，那份状态再也不会落盘。
+
+**保真**
+
+- `Execution.from_dict` 现在解析 `time`。`to_dict()` 一直在写它，读回来却丢掉，
+  往返一次 `created_at` 变成 `None`。
+- `demo` 在心跳读不出来（`None`）时照实报告，不再 `AttributeError`。
+
+测试：393 → 406（新增 13 条回归测试，无删除、无放宽断言）。
+
 ### 2026-11-09 · 审计修复：静默失败、心跳降级、挂单不成交、凭据入日志
 
 一轮「未知 bug / 不友好之处」审计后修掉的一批问题。共同点是**平时测试全绿、

@@ -80,6 +80,48 @@ DEFAULT_TASK_FAIL_LIMIT = 3
 #: 主循环心跳间隔
 LOOP_INTERVAL_SECONDS = 30
 
+
+def _normalize_schedule(
+        schedule: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """校验并归一化调度表 —— **静默不执行**是这里最贵的错法。
+
+    三件事，每一件都对应一个已经发生过的形状：
+
+    - **补齐前导零**：`("9:15", ...)` 原样比较字符串时，`"10:00" < "9:15"`
+      成立，那个任务当天**永远不会触发**，日志里一行都不留。归一化成
+      `09:15` 之后 `>=` 比较才有意义。
+    - **时刻必须可解析**：写错成 `"9：15"`（全角冒号）或 `"09:15:00"` 时，
+      原实现要等到 `due_tasks` 里 `strptime` 才炸，而且每 30 秒炸一次。
+      在构造期就报错，附上那个值本身。
+    - **任务名不得重复**：执行状态按**名字**记录（`executed_tasks`），
+      同名的第二个时刻永远不会触发 —— 而它看起来完全正常。
+      想在同一任务上跑两个时刻，就用两个唯一的名字（注册时可指向同一个函数）。
+    """
+    normalized: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for entry in schedule:
+        try:
+            at, name = entry
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"schedule 的每一项必须是 (时刻, 任务名)，当前是 {entry!r}") from exc
+        try:
+            parsed = datetime.strptime(str(at).strip(), "%H:%M")
+        except ValueError as exc:
+            raise ValueError(
+                f"schedule 里的时刻 {at!r} 不是 HH:MM（例：'14:57'）") from exc
+        name = str(name).strip()
+        if not name:
+            raise ValueError(f"schedule 里 {at!r} 的任务名不能为空")
+        if name in seen:
+            raise ValueError(
+                f"schedule 里任务名 {name!r} 重复 —— 执行状态按名字记录，"
+                f"同名的第二个时刻永远不会触发。请改用两个不同的名字。")
+        seen.add(name)
+        normalized.append((parsed.strftime("%H:%M"), name))
+    return normalized
+
+
 #: 「日历根本不可用」这条告警的最小间隔（秒）。
 #: 它是一个**持续故障**，会一直成立；但不该每 30 秒刷一行把日志淹掉。
 CALENDAR_DEAD_ALERT_SECONDS = 3600
@@ -122,22 +164,42 @@ class _AtomicState:
         if not self.path.exists():
             return {}
         try:
-            return json.loads(self.path.read_text(encoding="utf-8")) or {}
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             # 状态文件损坏时**不抛** —— 丢掉状态重启，好过让进程起不来。
             # 代价是当天可能重复执行任务，这个代价在日志里明确记下来。
             log.error("! 状态文件损坏，将以空状态启动（当天任务可能重复执行）: %s", e)
             return {}
+        # ★ 顶层必须是对象。原实现写 `json.loads(...) or {}`，于是
+        # `[]` / `""` / `0` 会被**静默**当成「空状态」；而它们的含义是
+        # 「文件形状不对」，与「今天还没有记录」不是一回事。留着它们更坏：
+        # 非空列表会让后面的 `.setdefault` 直接抛 AttributeError。
+        if not isinstance(data, dict):
+            log.error("! 状态文件顶层不是对象（%s），将以空状态启动"
+                      "（当天任务可能重复执行）", type(data).__name__)
+            return {}
+        return data
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """写盘。成功返回 True；失败只告警（不影响本轮，但调用方可据此重试）。"""
         tmp = self.path.with_suffix(".json.tmp")
         try:
             tmp.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
                            encoding="utf-8")
             os.replace(tmp, self.path)
-        except OSError as e:
-            log.warning("状态保存失败（不影响本轮）: %s", e)
+            return True
+        except (OSError, TypeError, ValueError) as e:
+            # TypeError / ValueError = 状态里有 JSON 表示不了的东西（策略塞了
+            # datetime、set、或者自引用结构）。它不会因为下一次重试而变好，
+            # 所以只能告警；但绝不能让它把整轮任务打断 —— 那样任务永远跑不成，
+            # 而问题其实只在「状态没存下来」。
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            log.error("! 状态保存失败（内存状态仍在；重启后会丢失）: %s", e)
+            return False
 
     # ---- 便捷视图 ----
 
@@ -176,7 +238,12 @@ class Runner:
         self.calendar = calendar
         self.clock = clock or datetime.now
 
-        self.schedule = list(schedule or DEFAULT_SCHEDULE)
+        # ★ **不能用 `schedule or DEFAULT_SCHEDULE`**：空列表是
+        # 「这条链没有定时任务」的合法表达（`build_file_chain` 就是这么用的），
+        # 而 `or` 会把它悄悄换成默认的四个任务 —— 于是只想手动 `step()`
+        # 的人一调 `run_forever()`，四个默认任务全跑了起来。None 才表示「没指定」。
+        self.schedule = _normalize_schedule(
+            DEFAULT_SCHEDULE if schedule is None else schedule)
         self.catchup_minutes = config.catchup_minutes
         self.fail_limit = config.task_fail_limit
 
@@ -188,8 +255,15 @@ class Runner:
         self.notifier = notifier or NullNotifier()
         self.throttle = NotifyThrottle(self.notifier)
         self.state = _AtomicState(config.state_path)
-        self.strategy_state = StrategyState(
-            data=dict(self.state.data.get("strategy_state", {})))
+        # 状态文件是**跨版本**的：旧版本、手改、或者外部工具都可能留下
+        # 非对象的 strategy_state。`dict(非对象)` 会在启动期直接抛 TypeError，
+        # 而正确的处置是忽略它、按空状态启动（与状态损坏同级）。
+        raw_state = self.state.data.get("strategy_state", {})
+        if not isinstance(raw_state, dict):
+            log.warning("! 策略状态不是对象（%s），忽略并按空状态启动",
+                        type(raw_state).__name__)
+            raw_state = {}
+        self.strategy_state = StrategyState(data=dict(raw_state))
 
         self._fail_count: dict[str, int] = {}
         #: 本进程内已知的心跳严重度。心跳读取失败时用它兜底 ——
@@ -409,8 +483,11 @@ class Runner:
         if not self.strategy_state.dirty:
             return
         self.state.data["strategy_state"] = self.strategy_state.as_dict()
-        self.strategy_state.dirty = False
-        self.state.save()
+        # ★ 只有**真的写盘成功**才清 dirty。原实现先清后写，写失败时
+        # 这一轮的状态就永远不会再尝试落盘 —— 进程重启后策略会以为
+        # 「今天还没调过仓」，重复下单。写失败本身不断任务，只是下一轮再试。
+        if self.state.save():
+            self.strategy_state.dirty = False
 
     # ============================================================
     # 质量报告与告警

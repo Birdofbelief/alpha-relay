@@ -267,7 +267,12 @@ def run_demo(keep: bool = False, quiet: bool = False) -> int:
 
     _hr("7. 心跳与最终状态")
     hb = chain.runner.stores.heartbeat.read()
-    emit(f"  心跳：last_task={hb.last_task!r} status={hb.status!r}")
+    if hb is None:
+        # 演示不该因为一个观测文件坏掉而崩掉 —— 心跳读不出来正是
+        # 「未知」这个状态本身（见 HeartbeatStore.read 的约定），照实报告。
+        emit("  心跳：**读不出来（未知）** —— 后端写入或文件格式有问题")
+    else:
+        emit(f"  心跳：last_task={hb.last_task!r} status={hb.status!r}")
     emit("  status 是**严重度阶梯**（alive < positions_stale < error），只升不降、"
           "\n  跨日复位。监控端按它决定发不发告警，所以「不降级」是接口语义。")
     emit("\n  严重度的映射（见 runner._severity_for）：")

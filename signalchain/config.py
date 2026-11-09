@@ -122,6 +122,32 @@ class Config:
 
     # ---------------- 构造 ----------------
 
+    def __post_init__(self) -> None:
+        """把「人类直接手写 dataclass」的两种常见形状归一化。
+
+        ★ 这两条都不是洁癖，是**同一类静默失效**的前置条件：
+
+        - `runtime_dir` 传入 `str`（不经过 `from_env` 时很自然）会让
+          `cache_dir` / `state_path` / `ensure_dirs` 全部在第一次 `/` 运算时
+          抛 `TypeError: unsupported operand type(s) for /: 'str' and 'str'`。
+          报错点离真正的原因很远，看起来像框架坏了。
+        - `role` 传入 `"Producer"` / `"EXECUTOR"` 时，`validate()` 会报
+          「必须是 producer 或 executor」，而 `Role(config.role)` 直接抛
+          `ValueError`。大小写不该是配置错误 —— `from_env` 已经在做这件事，
+          直接构造时应当一致。
+        """
+        self.runtime_dir = Path(self.runtime_dir)
+        self.role = str(self.role).strip().lower()
+        codes = self.limit_20_codes
+        if not codes:
+            self.limit_20_codes = frozenset()
+        elif isinstance(codes, str):
+            self.limit_20_codes = frozenset(
+                part.strip() for part in codes.split(",") if part.strip())
+        else:
+            self.limit_20_codes = frozenset(
+                str(c).strip() for c in codes if str(c).strip())
+
     @classmethod
     def from_env(cls, dotenv: str | Path | None = ".env") -> "Config":
         if dotenv:

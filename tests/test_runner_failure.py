@@ -81,7 +81,7 @@ class _Emit(Strategy):
 # ------------------------------------------------------------
 
 def _chain(tmp_path, strategy, *, fail_limit=3, stale_days=0,
-           with_executor=False):
+           with_executor=False, schedule=None):
     config = Config(runtime_dir=tmp_path / "rt",
                     task_fail_limit=fail_limit,
                     max_position_stale_days=stale_days)
@@ -92,7 +92,7 @@ def _chain(tmp_path, strategy, *, fail_limit=3, stale_days=0,
         transport=FileTransport(tmp_path / "ch"),
         calendar=weekday_calendar(date(2026, 1, 1), date(2026, 12, 31)),
         console=False,
-        schedule=SCHEDULE,
+        schedule=SCHEDULE if schedule is None else schedule,
         with_executor=with_executor,
     )
 
@@ -494,3 +494,58 @@ def test_total_aux_failure_still_blocks_buys(tmp_path):
 
     assert ctx.data.aux_data_ok is False
     assert "超时" in ctx.data.aux_reason
+
+
+# ------------------------------------------------------------
+# 调度表：静默不执行是最贵的错法
+# ------------------------------------------------------------
+
+def test_an_empty_schedule_means_no_scheduled_tasks(tmp_path):
+    """★ 空列表 ≠ 没指定。原实现用 `schedule or DEFAULT_SCHEDULE`，
+    把 `build_file_chain` 传进来的**空表**悄悄换成了默认四个任务：
+    只想手动 `step()` 的人一调 `run_forever()`，四个任务全跑了起来。
+    """
+    runner = _chain(tmp_path, _Quiet(), schedule=[]).runner
+
+    assert runner.schedule == []
+    assert runner.due_tasks(FIXED_NOW) == []
+
+
+def test_a_schedule_time_without_a_leading_zero_still_fires(tmp_path):
+    """`"9:15"` 与 `"10:00"` 按字符串比时 `"10:00" < "9:15"`，任务永远不触发。"""
+    runner = _chain(tmp_path, _Quiet(), schedule=[("9:15", "open")]).runner
+
+    assert runner.schedule == [("09:15", "open")]
+    now = datetime(2026, 9, 18, 9, 20)
+    assert runner.due_tasks(now) == [("09:15", "open", False)]
+
+
+def test_a_schedule_time_that_is_not_hh_mm_fails_at_construction(tmp_path):
+    """写错时刻要在装配期报错，而不是每 30 秒在 due_tasks 里炸一次。"""
+    with pytest.raises(ValueError, match="HH:MM"):
+        _chain(tmp_path, _Quiet(), schedule=[("9：15", "open")])
+
+
+def test_duplicate_task_names_are_rejected(tmp_path):
+    """执行状态按**名字**记录 —— 同名的第二个时刻永远不会触发，而且毫无痕迹。"""
+    with pytest.raises(ValueError, match="重复"):
+        _chain(tmp_path, _Quiet(),
+               schedule=[("09:15", "same"), ("14:57", "same")])
+
+
+# ------------------------------------------------------------
+# 状态文件：形状不对不能悄悄当空
+# ------------------------------------------------------------
+
+def test_a_state_file_with_a_non_dict_top_level_starts_empty(tmp_path):
+    """`json.loads(...) or {}` 会把 `[]` 静默当成空状态；非空列表则更糟 ——
+    后面的 `.setdefault` 直接抛 AttributeError，进程起不来。
+    """
+    from signalchain.runner import _AtomicState
+
+    path = tmp_path / "state.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    state = _AtomicState(path)
+
+    assert state.data == {}
+    assert state.executed("2026-09-18") == set()
