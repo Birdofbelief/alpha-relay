@@ -22,6 +22,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from signalchain.models import CH_SIGNALS
@@ -328,3 +330,38 @@ class TestGistTransportSpecifics:
         assert text.startswith("gist:")
         assert len(text.split(":")[1]) == 8
         assert FAKE_GIST not in text and FAKE_AUTH not in text
+
+    def test_retry_logging_never_leaks_the_gist_id(self, caplog, monkeypatch):
+        """★ 重试日志不许打印 gist_id。
+
+        gist_id 被当作凭据（知道它就能读 secret gist），而原实现直接打印
+        `url[:70]`。一次网络抖动就能把它永久写进日志文件。
+        """
+        import signalchain.transport.gist as gist_mod
+
+        monkeypatch.setattr(gist_mod.time, "sleep", lambda seconds: None)
+        session = _FakeGistSession(get_status=500)
+        t = GistTransport(FAKE_GIST, FAKE_AUTH, session=session, retries=1)
+
+        with caplog.at_level(logging.WARNING, logger="signalchain.transport.gist"):
+            with pytest.raises(TransportError):
+                t.read(CH_SIGNALS)
+
+        assert caplog.records, "重试了一次却没有任何日志"
+        leaked = [r.getMessage() for r in caplog.records
+                  if FAKE_GIST in r.getMessage()]
+        assert not leaked, f"gist_id 进了重试日志：{leaked}"
+
+    def test_network_exception_text_is_redacted(self):
+        """requests 的异常文本里带完整 URL —— 包装成 TransportError 时必须抹掉。"""
+        class _RaisingSession:
+            def request(self, method, url, **kwargs):
+                import requests
+                raise requests.ConnectionError(f"连接失败: {url}")
+
+        t = GistTransport(FAKE_GIST, FAKE_AUTH, session=_RaisingSession(), retries=0)
+
+        with pytest.raises(TransportError) as info:
+            t.read(CH_SIGNALS)
+        assert FAKE_GIST not in str(info.value), \
+            f"gist_id 跟着网络异常进了错误信息：{info.value}"

@@ -65,8 +65,23 @@ EXEC_STATUSES = frozenset({EXEC_SUBMITTED, EXEC_FILLED, EXEC_CANCELED,
 # （扫描器抓过这条 —— 初版这里写的就是一个真代码。）
 # ------------------------------------------------------------
 def to_jq(code: str) -> str:
-    """6 位数字代码 → 带交易所后缀。已是后缀形式则原样返回（幂等）。"""
-    code = str(code).strip()
+    """6 位数字代码 → 聚宽后缀；券商端后缀也归一过来。
+
+    ★ **不能「凡是带点就原样返回」。** 线格式规定 signals/executions 用
+    `.XSHG`/`.XSHE`，而券商端（以及 `positions` 的 key）用 `.SS`/`.SZ`。
+    如果一条从别处拿来的 `.SS` 代码原样进了 `Signal.code`，执行端就会按
+    聚宽写法去认它，表现为「信号发了但查无此标的」—— 静默，且只在跨端
+    混用时出现。
+
+    认不出的后缀保持原样（不猜）：猜错比不猜更坏。
+    """
+    code = str(code).strip().upper()
+    if code.endswith((".XSHG", ".XSHE")):
+        return code
+    if code.endswith((".SS", ".SH")):
+        return code[:-3] + ".XSHG"
+    if code.endswith(".SZ"):
+        return code[:-3] + ".XSHE"
     if "." in code:
         return code
     # 上交所：5/6/9 开头（含 5xx 基金、6xx 股票、9xx B股）；其余归深交所。
@@ -419,8 +434,8 @@ class PositionSnapshot:
                     f"positions 字段不是 dict（{type(raw).__name__}），按对账失败处理")
             return cls(
                 positions=cls._normalize(raw),
-                total_value=float(d.get("total_value", 0) or 0),
-                cash=float(d.get("cash", 0) or 0),
+                total_value=cls._number(d.get("total_value"), "total_value"),
+                cash=cls._number(d.get("cash"), "cash"),
                 updated_at=cls._parse_time(d.get("update_time")),
             )
 
@@ -439,6 +454,21 @@ class PositionSnapshot:
         """key 归一到聚宽形式，值只留 dict（非 dict 的值是脏数据，丢掉）。"""
         return {pt_to_jq(str(k)): dict(v)
                 for k, v in raw.items() if isinstance(v, dict)}
+
+    @staticmethod
+    def _number(raw: Any, field: str) -> float:
+        """金额字段转 float。**认不出必须抛 `WireFormatError`，不能让它逃出去。**
+
+        原实现直接 `float(...)`，一个 `"total_value": "约十万"` 就会抛
+        `ValueError`。而 `PositionStore.read` 只接 `WireFormatError`，于是
+        这个异常会穿过存储层、打断整轮 —— 比「判对账失败、只卖不买」更糟：
+        前者是降级，后者是整条链路停摆。
+        """
+        try:
+            return float(raw or 0)
+        except (TypeError, ValueError) as e:
+            raise WireFormatError(
+                f"持仓 {field} 不是数字（{raw!r}），按对账失败处理") from e
 
     @staticmethod
     def _parse_time(raw: Any) -> datetime | None:
@@ -469,8 +499,17 @@ class PositionSnapshot:
         返回的是**聚宽形式**（内部规范形式），因为调用方通常要拿它和
         `Signal.code` / 策略标的池比。要比数字的话用 `bare_codes`。
         """
-        return [c for c, p in self.positions.items()
-                if int(p.get("amount", 0) or 0) > 0]
+        out = []
+        for c, p in self.positions.items():
+            try:
+                amount = int(p.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                # 一条脏 amount 不该让「展示/日志」把整轮打断 ——
+                # 真正的格式问题由 from_dict/对账层负责。
+                amount = 0
+            if amount > 0:
+                out.append(c)
+        return out
 
 
 @dataclass
@@ -537,8 +576,15 @@ def payload_to_signals(payload: Any) -> list[Signal]:
     `WireFormatError` 里带上**序号与 id**：没有它，用户只知道「读不出来」，
     不知道去队列里翻哪一条。
     """
-    if not isinstance(payload, list):
+    if payload is None:
         return []
+    if not isinstance(payload, list):
+        # ★ 「文件不存在 / 空」是 None，正常；**其它非列表形状是文件坏了**。
+        # 原来这里静默返回空列表，于是「整个队列读坏了」和「队列本来就是空的」
+        # 长得一模一样 —— 产生端会以为没有待执行信号，执行端会以为无事可做。
+        raise WireFormatError(
+            f"信号队列顶层不是列表（{type(payload).__name__}） —— "
+            f"无法确认队列内容，按读取失败处理，不能当成「空队列」")
     out = []
     for position, item in enumerate(payload):
         if not (isinstance(item, dict) and item.get("code") and item.get("action")):
@@ -571,8 +617,14 @@ def executions_to_index(payload: Any, keep_latest: bool = True) -> dict[str, Exe
 
     依赖「列表按时间追加」这一约定 —— 它同样写进了 WIRE_CONTRACT。
     """
-    if not isinstance(payload, list):
+    if payload is None:
         return {}
+    if not isinstance(payload, list):
+        # ★ 回执尤其不能静默变空：空回执意味着「这些单都没执行过」，
+        # 执行端可能据此重新下单。坏形状必须走失败路径（上层 fail-closed）。
+        raise WireFormatError(
+            f"回执列表顶层不是列表（{type(payload).__name__}） —— "
+            f"不能当成「没有任何回执」")
     index: dict[str, Execution] = {}
     for position, item in enumerate(payload):
         if not isinstance(item, dict):
@@ -628,8 +680,12 @@ def terminal_signal_ids(payload: Any) -> set[str]:
     静默丢，否则记账里这笔就等于「没执行过」）。
     """
     ids: set[str] = set()
-    if not isinstance(payload, list):
+    if payload is None:
         return ids
+    if not isinstance(payload, list):
+        raise WireFormatError(
+            f"回执列表顶层不是列表（{type(payload).__name__}） —— "
+            f"无法判断哪些单已经结束过，按读取失败处理")
     for position, item in enumerate(payload):
         if not isinstance(item, dict):
             continue

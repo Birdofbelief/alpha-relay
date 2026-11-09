@@ -159,7 +159,6 @@ Three constants each treat one:
 |---|---|---|
 | (matching) `>=` rather than exact | — | **Missed**: in a 30-second loop, the second `14:57:00` most likely isn't inside the loop at all. Exact match = the task never runs that day |
 | `catchup_minutes` | 30 | **Far too late**: starting up after the close and back-filling the 14:57 task means placing orders from a decision that expired long ago |
-| `startup_min_budget_seconds` | 60 | **Eating your own window**: refreshing the history cache on startup takes so long that the next task gets judged overdue and skipped |
 | `task_fail_limit` | 3 | **Log flooding**: one deterministic exception thrown every 30 seconds is 2880 throws a day; the real alerts drown |
 
 ### ★ Three details that are easy to miss

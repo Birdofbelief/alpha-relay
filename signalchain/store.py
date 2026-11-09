@@ -65,9 +65,20 @@ class SignalQueue:
         self._max = max_items
 
     def raw(self) -> list[dict[str, Any]]:
-        """原始列表。**保留全部字段**，供需要精确保真的场景使用。"""
+        """原始列表。**保留全部字段**，供需要精确保真的场景使用。
+
+        ★ 非列表形状是**文件坏了**，不是「空队列」。若在这里静默返回 []，
+        随后的 append / prune 会拿空列表做 read-modify-write，把整份队列
+        覆盖掉 —— 信号凭空消失，而日志显示「成功」。
+        """
         payload = self._t.read(CH_SIGNALS)
-        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            raise WireFormatError(
+                f"信号队列顶层不是列表（{type(payload).__name__}） —— "
+                f"拒绝在此基础上读写，避免覆盖原内容")
+        return [item for item in payload if isinstance(item, dict)]
 
     def signals(self) -> list[Signal]:
         """解析成对象。只读用途，不要拿它的结果去回写。"""
@@ -126,7 +137,11 @@ class SignalQueue:
                 continue
             keep.append(item)
         if removed:
-            self._t.write(CH_SIGNALS, keep)
+            if not self._t.write(CH_SIGNALS, keep):
+                # 清理没写成功 ⇒ 队列其实没变。不能报「已删 N 条」：
+                # 调用方会以为清干净了，而队列仍带着旧信号（跨日单尤其危险）。
+                log.warning("× 队列清理写回失败，队列保持不变（本次未删除任何信号）")
+                return 0
         return removed
 
 
@@ -139,7 +154,15 @@ class ExecutionLog:
 
     def raw(self) -> list[dict[str, Any]]:
         payload = self._t.read(CH_EXECUTIONS)
-        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+        if payload is None:
+            return []
+        if not isinstance(payload, list):
+            # ★ 回执读坏了绝不能当空：空回执 = 「这些单都没执行过」，
+            # 执行端据此会重新下单。宁可整次读取失败（上层 fail-closed）。
+            raise WireFormatError(
+                f"回执列表顶层不是列表（{type(payload).__name__}） —— "
+                f"拒绝当作「没有任何回执」")
+        return [item for item in payload if isinstance(item, dict)]
 
     def index(self) -> dict[str, Any]:
         """`{signal_id: 最新一条回执}`。回答「这笔单现在是什么状态」。"""
@@ -206,7 +229,10 @@ class PositionStore:
             return None
         try:
             return PositionSnapshot.from_dict(payload)
-        except WireFormatError as e:
+        except (WireFormatError, ValueError, TypeError) as e:
+            # ValueError/TypeError 是兜底：from_dict 已经把金额字段转成
+            # WireFormatError，但任何解析实现都可能漏掉一个分支。这里的原则
+            # 不变 —— 认不出 = 未知 = 降级禁买，绝不让异常冒出去打断整轮。
             log.error("× 持仓格式认不出，按对账失败处理（不是当成空仓）: %s", e)
             return None
 
@@ -225,11 +251,26 @@ class HeartbeatStore:
     def __init__(self, transport: SingleWriterGuard) -> None:
         self._t = transport
 
-    def read(self) -> Heartbeat:
+    def read(self) -> Heartbeat | None:
+        """读心跳。三种结果必须分开：
+
+        - `Heartbeat`        → 读到了（文件不存在时也会返回一份**全新**心跳）
+        - `None`             → **读失败/内容认不出** ⇒ 严重度未知，不能当成 alive
+        - 全新 `Heartbeat()` → 文件不存在 = 首次运行，确实还没有任何历史严重度
+
+        ★ 原实现把「读失败」也退回默认 alive，于是下一次 `escalate("alive")`
+        在阶梯上不升，写回去就把昨天的 `error` **静默抹掉**了。监控端看到
+        alive 就不会告警 —— 一次传输抖动足以让一个已发生的故障消失。
+        """
         try:
-            return Heartbeat.from_dict(self._t.read(CH_HEARTBEAT))
+            payload = self._t.read(CH_HEARTBEAT)
         except TransportError:
+            return None
+        if payload is None:
             return Heartbeat()
+        if not isinstance(payload, dict):
+            return None
+        return Heartbeat.from_dict(payload)
 
     def write(self, last_task: str, status: str = "alive",
               when: datetime | None = None) -> bool:

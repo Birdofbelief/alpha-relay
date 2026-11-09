@@ -75,6 +75,16 @@ class GistTransport(Transport):
         # 允许注入 requests.Session（测试用；也便于复用连接池）
         self._session = session
 
+    def _redact(self, text: Any) -> str:
+        """把 gist_id 从任何要进日志/异常的文本里抹掉。
+
+        ★ gist_id 本身被当作凭据（知道它就能读 secret gist），而 `requests`
+        的异常信息里**带完整 URL**。原来重试日志直接打印 `url[:70]`，
+        异常包装又原样拼 `{e}` —— 一次网络抖动就能把 ID 永久写进日志文件。
+        """
+        value = str(text)
+        return value.replace(self._gist_id, "<gist>") if self._gist_id else value
+
     # ---------------- 凭据来源 ----------------
 
     @classmethod
@@ -146,7 +156,8 @@ class GistTransport(Transport):
                 # 退避序列约 1.5~2.0s、3.0~3.5s；加随机抖动错峰，避免多进程同时重试
                 wait = 1.5 * (2 ** attempt) + random.uniform(0, 0.5)
             log.warning("Gist 请求失败（%s），第 %d/%d 次重试，等待 %.1fs: %s %s",
-                        last_err, attempt + 1, self._retries, wait, method, url[:70])
+                        last_err, attempt + 1, self._retries, wait, method,
+                        self._redact(url)[:70])
             time.sleep(wait)
 
         if resp is None and last_exc is not None:
@@ -172,7 +183,9 @@ class GistTransport(Transport):
         try:
             resp = self._request("GET", API_BASE + self._gist_id)
         except Exception as e:  # noqa: BLE001 - 网络层异常统一转成 TransportError
-            raise TransportError(f"读取 gist 失败（{channel}）: {type(e).__name__}: {e}") from e
+            raise TransportError(
+                f"读取 gist 失败（{channel}）: {type(e).__name__}: "
+                f"{self._redact(e)}") from e
 
         if resp.status_code != 200:
             raise TransportError(f"读取 gist 失败（{channel}）: HTTP {resp.status_code}")
@@ -211,7 +224,9 @@ class GistTransport(Transport):
         try:
             resp = self._request("PATCH", API_BASE + self._gist_id, json=payload)
         except Exception as e:  # noqa: BLE001
-            raise TransportError(f"写入 gist 失败（{channel}）: {type(e).__name__}: {e}") from e
+            raise TransportError(
+                f"写入 gist 失败（{channel}）: {type(e).__name__}: "
+                f"{self._redact(e)}") from e
 
         if resp.status_code != 200:
             log.warning("写入 gist 失败（%s）: HTTP %s", channel, resp.status_code)

@@ -55,6 +55,19 @@ def test_to_jq_is_idempotent():
     assert to_jq(once) == once
 
 
+def test_to_jq_normalizes_broker_style_suffix():
+    """★ `.SS`/`.SZ` 必须归一成聚宽形式，不能「带点就原样返回」。
+
+    券商端（以及持仓字典的 key）用 `.SS`/`.SZ`。如果它原样进了 `Signal.code`，
+    执行端会按聚宽写法去认 —— 症状是「信号发了但查无此标的」，静默且只
+    在跨端混用时出现。
+    """
+    assert to_jq("510050.SS") == "510050.XSHG"
+    assert to_jq("159919.SZ") == "159919.XSHE"
+    assert to_jq("510050.sh") == "510050.XSHG"     # 大小写不敏感
+    assert to_jq("510050.XX") == "510050.XX"       # 认不出的后缀不猜
+
+
 def test_to_bare_accepts_broker_style_suffix():
     """`to_bare` 必须同时吃下两种后缀风格。
 
@@ -158,7 +171,29 @@ def test_payload_helpers_skip_garbage():
     out = payload_to_signals(payload)
     assert len(out) == 1 and out[0].sig_id == good.sig_id
     assert payload_to_signals(None) == []
-    assert payload_to_signals({"不是": "列表"}) == []
+
+
+def test_a_non_list_signal_payload_raises_instead_of_looking_empty():
+    """★ 顶层不是列表 = 文件坏了，不是「空队列」。
+
+    原实现返回 `[]`，于是「整个队列读坏了」和「队列本来就是空的」长得
+    一模一样：产生端以为没信号、执行端以为无事可做，而磁盘上可能躺着
+    一笔卖出。更危险的是 RMW 会在此基础上用空列表覆盖原文件。
+    """
+    from signalchain.models import WireFormatError
+
+    with pytest.raises(WireFormatError) as info:
+        payload_to_signals({"不是": "列表"})
+    assert "不是列表" in str(info.value)
+
+
+def test_a_non_list_executions_payload_raises_instead_of_looking_empty():
+    """★ 回执顶层不是列表更不能变空 —— 空回执 = 「这些单都没执行过」。"""
+    from signalchain.models import WireFormatError
+
+    for fn in (executions_to_index, terminal_signal_ids):
+        with pytest.raises(WireFormatError):
+            fn({"不是": "列表"})
 
 
 # ------------------------------------------------------------
@@ -273,6 +308,19 @@ def test_position_snapshot_accepts_documented_wire_shapes():
     bare = PositionSnapshot.from_dict({"510050.SS": {"amount": 100, "cost": 1.0}})
     assert bare.bare_codes == ["510050"]
     assert bare.cash == 0.0
+
+
+def test_position_snapshot_bad_numeric_field_is_a_format_error():
+    """`cash`/`total_value` 不是数字 → `WireFormatError`，不是裸 `ValueError`。
+
+    裸 ValueError 会穿过 `PositionStore.read`（它只接 WireFormatError），
+    打断整轮 —— 而正确的降级是「判对账失败、只卖不买」。
+    """
+    from signalchain.models import WireFormatError
+
+    for field in ("cash", "total_value"):
+        with pytest.raises(WireFormatError):
+            PositionSnapshot.from_dict({"positions": {}, field: "很多"})
 
 
 def test_position_snapshot_held_codes_drops_zero_amounts():

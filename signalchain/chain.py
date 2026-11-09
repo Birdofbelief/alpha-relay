@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -89,7 +89,11 @@ class Chain:
         now = now or datetime.now()
         fills: dict[str, int] = {}
         if self.executor is not None:
-            self.executor.publish_positions(now)
+            if not self.executor.publish_positions(now):
+                # ★ 不处理返回值就等于「报持仓失败」在链路上没有任何痕迹。
+                # 产生端仍可能读到上一轮留下的旧持仓并判「已对账」——
+                # 是否拦住取决于 SC_MAX_POSITION_STALE_DAYS（默认关）。
+                log.warning("× 执行端报持仓返回 False —— 产生端可能读到旧持仓")
         result = self.runner.run_round(now, task="step")
         if self.executor is not None:
             fills = self.executor.step(now)
@@ -183,11 +187,20 @@ def build_chain(
                 "失败原因见上一行日历自己的报错。")
 
     # 行情：显式传入 > 在线（重试 + 缓存）
+    market_built_here = market is None
     if market is None:
         from .marketdata.cache import CachedMarketData
         from .marketdata.online import OnlineMarketData, RetryingMarketData
+        # ★ `SC_SNAPSHOT_TTL` 原先只读进 `Config`、**没有任何消费者**：
+        # 构造在线行情时没传，于是模板里的旋钮设了也不生效。
+        # `max_snapshot_age` 至少不能小于 TTL，否则 TTL 调大后会出现
+        # 「未过期但超过年龄上限」的矛盾组合。
         market = CachedMarketData(
-            RetryingMarketData(OnlineMarketData(timeout=config.http_timeout)),
+            RetryingMarketData(OnlineMarketData(
+                timeout=config.http_timeout,
+                snapshot_ttl=config.snapshot_ttl,
+                max_snapshot_age=max(300.0, config.snapshot_ttl),
+            )),
             cache_dir=config.cache_dir, calendar=calendar,
             max_stale_days=config.max_stale_days,
         )
@@ -203,6 +216,19 @@ def build_chain(
     )
     if clock is not None:
         runner.clock = clock
+
+    # ★ 给在线行情的重试层接上「下一个补执行窗口关闭」的硬截止。
+    # 不接的话 `RetryingMarketData.deadline` 恒为 None —— 一次不完整的行情
+    # 可以让重试一直睡下去，把 14:57 那种几分钟的窗口整个耗光，结果是为了
+    # 拿到行情而错过了能用行情的时刻（见 `RetryingMarketData` 的文档）。
+    if market_built_here:
+        retrying = getattr(market, "inner", None)
+        if retrying is not None and hasattr(retrying, "deadline"):
+            def _next_deadline():
+                now = runner.clock()
+                seconds = runner.seconds_until_next_deadline(now)
+                return None if seconds is None else now + timedelta(seconds=seconds)
+            retrying.deadline = _next_deadline
 
     # 执行端：显式传入 > with_executor 造一个纸面执行端 > 不装。
     #

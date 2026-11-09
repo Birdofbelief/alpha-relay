@@ -74,6 +74,12 @@ LOT_CASH = 10000   # 每次买入用多少钱（示例值）
 class DemoBasicStrategy(Strategy):
     name = "demo_basic"
 
+    #: `decide` 算出的目标持仓，留给 `on_finish` 落状态。
+    #: **不在 `decide` 里写 `ctx.state`** —— 那是纯函数契约明确禁止的副作用：
+    #: 买入被闸门否决、或信号根本没成交时，状态却已经前进了，下一轮会以为
+    #: 自己已经持有目标标的而不再发买入。
+    _pending_target: list[str] | None = None
+
     def universe(self) -> Sequence[str]:
         return list(DEMO_UNIVERSE)
 
@@ -142,8 +148,26 @@ class DemoBasicStrategy(Strategy):
             signals.append(ctx.signal(code, ACTION_BUY, amount=shares,
                                       price=price, signal_type="demo_entry"))
 
-        ctx.state.set("holding", target)
+        self._pending_target = target
         return signals
 
     def on_finish(self, ctx: StrategyContext, results) -> None:
+        """本轮结束后的记账 —— 这是契约允许写 `ctx.state` 的唯一位置之一。
+
+        ★ 只有**干净完成**的一轮才推进 `holding`：无错误、无闸门否决、
+        且全部放行信号都真的写进了队列。否则状态保持不变，下一轮还会
+        重新判断该不该买 —— 这正是「买入被拦下时不该假装已经持有」。
+        实际成交与否仍看不到（框架刻意不把持仓暴露给策略），但至少
+        不会因为「信号没发出去」就凭空推进状态。
+        """
+        target, self._pending_target = self._pending_target, None
+        if target is not None and results is not None:
+            clean = (not results.error
+                     and not results.vetoes
+                     and results.written == results.allowed)
+            if clean:
+                ctx.state.set("holding", target)
+            else:
+                ctx.log.warning("演示策略：本轮未干净完成（%s），持仓记录保持不变",
+                                results.summary())
         ctx.log.info("演示策略：本轮 %s", results.summary() if results else "无结果")

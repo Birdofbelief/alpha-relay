@@ -11,6 +11,63 @@
 
 ## 未发布（`v0.2.0` 之后）
 
+### 2026-11-09 · 审计修复：静默失败、心跳降级、挂单不成交、凭据入日志
+
+一轮「未知 bug / 不友好之处」审计后修掉的一批问题。共同点是**平时测试全绿、
+只在特定时刻显形**：写入恰好失败、心跳恰好读不到、限价单恰好挂住、代码恰好带后缀。
+
+**失败不再被当成成功**
+
+- `Runner.run_round`：信号投递返回 `False` 时置 `RoundResult.error`，不再让
+  `run_due` 把任务标记成「今日已执行」。原实现会让当天信号没发出去却永不重试。
+- `run_due`：`OwnershipError` 不再被通用 `except` 吞掉当成普通失败（连跑 3 次
+  还会把任务记成「已执行」），改为继续上抛。
+- `SignalQueue.prune`：写回失败时返回 0，不再谎报「已删 N 条」。
+- `Chain.step` / `PaperExecutor`：持仓与回执写入的返回值不再被忽略；
+  回执写失败时回滚本地纸面账户，避免下一轮按「没有回执」重复成交。
+
+**心跳**
+
+- `HeartbeatStore.read()` 读失败返回 `None`（未知），不再冒充 `alive`；
+  `Runner.beat` 用进程内已知最严重状态兜底，读取抖动不会抹掉已发生的 `error`。
+- `Runner.roll_day` 跨日把心跳复位为 `alive` —— 「只升不降」的配套动作原先缺失。
+- 心跳写入返回 `False` 时留日志。
+
+**数据质量**
+
+- 辅助数据**部分缺失**不再整份丢弃、不再拦全部买入：已拿到的值照常进 `ctx.aux`，
+  只有整体 `error` 才判不可信（与 `AuxDataGate` 的分工一致）。
+- 持仓快照的金额字段不是数字时转成 `WireFormatError`（降级为「只卖不买」），
+  不再让裸 `ValueError` 穿过存储层打断整轮。
+- 信号/回执顶层不是列表时抛 `WireFormatError`，不再静默当成空队列/空回执
+  （空回执会让执行端重新下单；空队列会让 RMW 覆盖原文件）。
+
+**行情**
+
+- `to_sina` 先剥交易所后缀；`OnlineMarketData.quotes` 也按裸代码匹配。
+  原实现下 `510050.XSHG` 会变成 `sh510050.XSHG`，整批 missing。
+- `RetryingMarketData` 重取前调用 `invalidate_snapshot()`，重试不再读回同一份
+  残表空转。
+- `SC_SNAPSHOT_TTL` 真正接进 `build_chain`；`RetryingMarketData.deadline` 接到
+  `Runner.seconds_until_next_deadline`，重试不会睡过补执行窗口。
+
+**代码格式**
+
+- `to_jq` 把 `.SS`/`.SZ`（及 `.SH`）归一成 `.XSHG`/`.XSHE`，不再「带点就原样返回」。
+  认不出的后缀保持原样。
+
+**凭据与文档**
+
+- Gist 重试日志与异常包装、ServerChan 异常日志都抹掉 gist_id / sendkey。
+- `demo_basic` 不在 `decide()` 里写 `ctx.state`；只有干净完成的一轮才推进持仓记录。
+- 删掉从未被消费的 `STARTUP_MIN_BUDGET_SECONDS` 与文档里对应的旋钮；
+  修正 `SC_SNAPSHOT_TTL` 的说明（它是行情快照缓存，不是持仓保鲜期）；
+  更新「持仓快照不查新鲜度」这条已过期的取舍说明。
+- `tools/check_version.py` 只在安装的包确实指向当前源码时才比较版本，
+  避免「机器上另装了一个旧版」造成的假违规。
+
+测试：371 → 393（新增 22 条回归测试，无删除、无放宽断言）。
+
 ### 2026-11-04 · 队列清理：跨日信号一律删，终态判定改为「曾经到过」
 
 从一条实盘链路回灌（2026-11-01 的 v7.1 补丁）。队列清理原来的两条规则是：

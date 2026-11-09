@@ -93,7 +93,11 @@ class ServerChanNotifier:
                 timeout=self._timeout,
             )
         except Exception as e:  # noqa: BLE001 - 通知失败不上抛
-            log.warning("ServerChan 发送异常: %s", e)
+            # ★ requests 的异常文本里带完整 URL，而 URL 里就是 sendkey。
+            # 原实现直接 `log.warning(..., e)`，一次网络抖动就把 key 永久
+            # 写进日志。日志里只留异常类型与脱敏后的文本。
+            log.warning("ServerChan 发送异常: %s: %s", type(e).__name__,
+                        str(e).replace(self._key, "<key>"))
             return False
         if resp.status_code != 200:
             log.warning("ServerChan 发送失败: HTTP %s", resp.status_code)

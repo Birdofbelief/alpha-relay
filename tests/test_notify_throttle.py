@@ -13,9 +13,35 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from signalchain.notify import NotifyThrottle
+
+
+def test_serverchan_exception_log_redacts_the_sendkey(caplog, monkeypatch):
+    """★ requests 的异常文本里带完整 URL，而 URL 里就是 sendkey。
+
+    原实现直接 `log.warning("...: %s", e)`，一次网络抖动就把 key 永久写进
+    日志文件 —— 与「凭据不许进日志」那条铁律直接冲突。
+    """
+    import requests
+    import signalchain.notify as notify
+
+    key = "SCT-test-key-123"
+
+    def _raise(url, **kwargs):
+        raise requests.ConnectionError(f"连接失败: {url}")
+
+    monkeypatch.setattr(requests, "post", _raise)
+    notifier = notify.ServerChanNotifier(key)
+
+    with caplog.at_level(logging.WARNING, logger="signalchain.notify"):
+        assert notifier.send("标题", "正文") is False
+
+    assert caplog.records, "发送失败却没有留下任何日志"
+    leaked = [r.getMessage() for r in caplog.records if key in r.getMessage()]
+    assert not leaked, f"sendkey 进了日志：{leaked}"
 
 
 class RecordingNotifier:

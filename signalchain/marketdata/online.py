@@ -50,7 +50,7 @@ from typing import Sequence
 import pandas as pd
 import requests
 
-from ..models import to_jq  # noqa: F401 - 线格式的真相源在 models，此处仅再导出
+from ..models import to_bare, to_jq  # noqa: F401 - to_jq 仅再导出，线格式真相源在 models
 from .base import MarketDataError, Quote, QuoteBatch
 
 log = logging.getLogger(__name__)
@@ -67,14 +67,20 @@ SINA_QUOTE = "https://hq.sinajs.cn/list={codes}"
 
 
 def to_sina(code: str) -> str:
-    """6 位代码 → 腾讯/新浪用的**带市场前缀**形式。
+    """代码 → 腾讯/新浪用的**带市场前缀**形式（`sh600519`）。
 
     与 `models.to_jq` 是同一套「5/6/9 开头属上交所」规则的两个方向：
-    一个给北向的 URL 用（`sh600519`），一个给线格式用（`600519.XSHG`）。
+    一个给北向的 URL 用，一个给线格式用（`600519.XSHG`）。
     规则必须一致 —— 不一致会让「沪市的标的按深市去查」，而腾讯对不存在的
     代码返回空节点，表现为「这只标的数据拿不到」，排查时极易误判成网络问题。
+
+    ★ **必须先剥掉交易所后缀。** `510050.XSHG` 直接拼成 `sh510050.XSHG`
+    会被行情源当成不存在 —— 而本框架内部与策略传进来的代码经常带后缀
+    （`Signal.code` 就是聚宽形式）。这个 bug 只在「用真实行情 + 带后缀代码」
+    时出现：纸面/假行情测试全都绿，一到线上就整批 missing。
     """
-    return f"sh{code}" if code.startswith(("5", "6", "9")) else f"sz{code}"
+    bare = to_bare(code)
+    return f"sh{bare}" if bare.startswith(("5", "6", "9")) else f"sz{bare}"
 
 
 def parse_sina_num(text) -> float | None:
@@ -127,11 +133,15 @@ class OnlineMarketData:
 
         present = set(df["code"])
         for code in codes:
-            if code not in present:
+            # 快照表里的 code 是裸六位；请求方可能带 `.XSHG`/`.SS` 等后缀。
+            # 按原样比会让「510050.XSHG 查不到」—— 与上一条 to_sina 的 bug
+            # 是同一个根因的两半：发请求没剥后缀、查结果也没剥。
+            bare = to_bare(code)
+            if bare not in present:
                 # 整行缺失 = 管道异常（**不是**停牌，见模块文档）→ 交给闸门决定
                 batch.missing.append(code)
                 continue
-            row = df[df["code"] == code].iloc[-1]
+            row = df[df["code"] == bare].iloc[-1]
             quote = Quote(
                 code=code,
                 name=str(row.get("name", "")),
@@ -146,6 +156,15 @@ class OnlineMarketData:
             if not quote.is_finite:
                 batch.invalid.append(code)
         return batch
+
+    def invalidate_snapshot(self) -> None:
+        """丢弃进程内快照缓存。
+
+        重试层在重取之前调用它 —— 否则一次请求拿回残缺表后，后续重试会
+        **反复读到同一份残表**（还在 TTL 内），重试变成纯粹的空转：
+        日志显示「重试 2 次」，实际一次网络请求都没再发。
+        """
+        self._snapshot = None
 
     def _snapshot_or_none(self) -> pd.DataFrame | None:
         """取出未过期的快照；过期则返回 None。
@@ -333,6 +352,12 @@ class RetryingMarketData:
                         batch.problems(), self.interval, attempt, self.attempts)
             time.sleep(self.interval)
             self.stats["retries"] += 1
+            # ★ 重取前丢弃源内部的残表缓存，否则重试读回同一份残表（TTL 内），
+            # 日志说「重试了」而实际没有任何新请求 —— 这类空转最难看出来，
+            # 因为重试计数、日志、退出路径全都正常。
+            drop = getattr(self.inner, "invalidate_snapshot", None)
+            if callable(drop):
+                drop()
             batch = self.inner.quotes(codes)
             if batch.ok:
                 return batch

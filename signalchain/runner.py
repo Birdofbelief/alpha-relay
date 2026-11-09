@@ -51,7 +51,7 @@ from typing import Any, Callable, Sequence
 from .calendar import TradingCalendar
 from .config import Config
 from .gates import DataQuality, GateChain, Veto
-from .models import TERMINAL_EXEC_STATUSES
+from .models import TERMINAL_EXEC_STATUSES, Heartbeat
 from .notify import NotifyThrottle, NullNotifier
 from .store import Stores
 from .strategy import AuxResult, Strategy, StrategyContext, StrategyState
@@ -83,10 +83,6 @@ LOOP_INTERVAL_SECONDS = 30
 #: 「日历根本不可用」这条告警的最小间隔（秒）。
 #: 它是一个**持续故障**，会一直成立；但不该每 30 秒刷一行把日志淹掉。
 CALENDAR_DEAD_ALERT_SECONDS = 3600
-
-#: 启动时刷新历史的最低时间预算：低于它就跳过刷新，优先保证定时任务不被拖过窗口
-STARTUP_MIN_BUDGET_SECONDS = 60
-
 
 @dataclass
 class RoundResult:
@@ -196,6 +192,9 @@ class Runner:
             data=dict(self.state.data.get("strategy_state", {})))
 
         self._fail_count: dict[str, int] = {}
+        #: 本进程内已知的心跳严重度。心跳读取失败时用它兜底 ——
+        #: 没有它，一次读取抖动就会让「未知」退回 alive，进而抹掉已发生的 error。
+        self._hb_status = "alive"
         self._tasks: dict[str, Callable[[datetime], Any]] = {}
         # 「跳过本轮」的日志节流，见 `_log_skip`
         self._last_skip_alert: datetime | None = None
@@ -246,6 +245,15 @@ class Runner:
             for sig in allowed:
                 if self.stores.signals.append(sig):
                     result.written += 1
+
+            if result.written < result.allowed:
+                # ★ 投递失败必须让**本轮失败**。原实现只数成功条数、不置 error，
+                # 于是 run_due 把它当成正常完成并 `mark_executed` —— 当天的信
+                # 号没发出去，却再也不会重试，心跳还报 alive。
+                # 置 error 之后走 `_record_failure`：下一轮重试，到上限才显式放弃。
+                result.error = (f"信号投递失败：{result.allowed - result.written}"
+                                f"/{result.allowed} 条未写入")
+                log.error("× %s", result.error)
 
             # 顺手清理队列（幂等且便宜），避免队列长期只增不减。
             # ★ 传「曾经到过终态」而不是最新一条回执：见 store.py 的 prune 注释。
@@ -379,13 +387,23 @@ class Runner:
                 res = AuxResult(name=src.name, error=f"{type(e).__name__}: {e}")
                 log.error("× 辅助数据 %s 获取异常: %s", src.name, e)
             results.append(res)
-            if res.ok:
+            # ★ **部分缺失也要把拿到的值交给策略。**
+            # `AuxResult.ok` 对「缺了 1 只」同样是 False，原实现据此把整份
+            # `values` 丢掉 —— 于是「21 只里漏 1 只」和「接口整个挂了」受到
+            # 完全一样的处置（全量禁买）。而策略本可以只排除那一只。
+            if res.values and not res.error:
                 ctx.aux[res.name] = res.values
 
-        bad = [r for r in results if not r.ok]
+        # ★ 只有**整体失败**（error）才禁买；部分缺失由策略在选股阶段排除，
+        # 这是 `AuxDataGate` 文档里写死的分工，也立刻体现在 `ctx.data` 里。
+        bad = [r for r in results if r.error]
+        partial = [r for r in results if r.missing and not r.error]
         ctx.data.aux_data_ok = not bad
-        ctx.data.aux_missing = [m for r in bad for m in r.missing]
+        ctx.data.aux_missing = [m for r in results for m in r.missing]
         ctx.data.aux_reason = "；".join(r.reason() for r in bad if r.reason())
+        if partial:
+            log.warning("! 辅助数据部分缺失（不拦买入，由策略排除）: %s",
+                        "；".join(r.reason() for r in partial))
 
     def _persist_strategy_state(self) -> None:
         if not self.strategy_state.dirty:
@@ -444,10 +462,22 @@ class Runner:
         """
         try:
             hb = self.stores.heartbeat.read()
+            if hb is None:
+                # ★ 读失败 = 严重度**未知**，不是 alive。
+                # 用本进程内已知的最严重状态兜底：宁可多报一天错误，也不能
+                # 让一次读取抖动把昨天的 error 降级成 alive（监控就此静默）。
+                log.warning("心跳读取失败，严重度未知；沿用本进程内已知状态 %s",
+                            self._hb_status)
+                hb = Heartbeat(status=self._hb_status)
             hb.escalate(status or "alive")
             hb.last_task = task
             hb.last_time = self.clock()
-            self.stores.heartbeat.write(hb.last_task, hb.status, hb.last_time)
+            if not self.stores.heartbeat.write(hb.last_task, hb.status, hb.last_time):
+                # ★ 后端返回 False（非 200）不会抛异常；原实现直接忽略这个返回值，
+                # 于是「心跳没写进去」在日志里没有任何痕迹。
+                log.warning("心跳写入返回失败（严重度 %s 未落盘）", hb.status)
+                return
+            self._hb_status = hb.status
         except Exception as e:  # noqa: BLE001 - 心跳失败绝不能影响主流程
             log.warning("心跳写入失败: %s", e)
 
@@ -506,8 +536,11 @@ class Runner:
     def seconds_until_next_deadline(self, now: datetime) -> float | None:
         """距**下一个补执行窗口关闭**还有多少秒；今日没有待办窗口则 None。
 
-        这个数用来给启动期的长耗时动作（刷新历史缓存）定预算：
-        刷新必须在下一个任务窗口关闭前结束，否则会把那个任务判成超时跳过。
+        这个数是给任何「可能把窗口耗光」的长耗时动作定预算用的：
+          - 启动期刷新历史缓存（调用方自行取用）
+          - 行情重试的硬截止 —— `build_chain` 把它接到
+            `RetryingMarketData.deadline` 上（见 `chain.py`）
+        没有这个预算，一次不完整的行情可以让重试睡过整个交易窗口。
         """
         day = now.strftime("%Y-%m-%d")
         deadlines = []
@@ -555,6 +588,12 @@ class Runner:
             target = datetime.strptime(f"{day} {at}", "%Y-%m-%d %H:%M")
             try:
                 outcome = self._dispatch(name, fn, now, target)
+            except OwnershipError:
+                # ★ 所有权错误是**编程/装配错误**，不是「这一轮运气不好」。
+                # 原实现被下面的通用 except 吞掉，当成一次普通失败重试 ——
+                # 连跑 3 次后甚至把任务标记成「已执行」，架构违规就此消失。
+                # 让它继续上抛，由最外层兜底记录并继续存活（但绝不静默）。
+                raise
             except Exception as e:  # noqa: BLE001 - 单轮失败不该杀进程
                 self._record_failure(day, name, f"{type(e).__name__}: {e}",
                                      exc_info=True)
@@ -649,6 +688,15 @@ class Runner:
             return
         self.state.data["current_day"] = day
         self._fail_count.clear()
+        # ★ 心跳严重度跨日复位。`escalate` 只升不降是**当日**语义，复位动作
+        # 必须由跨日这一步显式完成 —— 否则一次 error 会永远留在心跳里，
+        # 监控端会收到永不消失的告警，人最后学会忽略它。
+        self._hb_status = "alive"
+        try:
+            if not self.stores.heartbeat.write("roll_day", "alive", now):
+                log.warning("跨日心跳复位写入失败（严重度可能仍是昨日值）")
+        except Exception as e:  # noqa: BLE001 - 心跳失败不影响当天任务
+            log.warning("跨日心跳复位失败: %s", e)
         # 告警节流的跨日复位。**不是**「当日一次」的实现（那由 notify_once 自己
         # 按日比对保证），只是防 `_sent` 随天数无界增长 —— 见 notify.py 的 reset()。
         self.throttle.reset()

@@ -30,7 +30,8 @@ from signalchain.config import Config
 from signalchain.marketdata.fake import FakeMarketData
 from signalchain.models import (ACTION_BUY, PositionSnapshot, Signal,
                                 payload_to_signals)
-from signalchain.strategy import Strategy
+from signalchain.strategy import AuxResult, Strategy
+from signalchain.transport.base import OwnershipError
 from signalchain.transport.file import FileTransport
 
 from .conftest import CLEAN_CODES, FIXED_NOW
@@ -128,6 +129,41 @@ def test_a_successful_round_is_still_marked_executed(tmp_path):
 
     assert TASK in runner.state.executed(DAY)
     assert runner._fail_count.get(TASK, 0) == 0             # noqa: SLF001
+
+
+def test_a_failed_signal_write_fails_the_round_and_keeps_it_retryable(tmp_path):
+    """★ 写入返回 False 必须让本轮失败，不能「数了成功条数就算完成」。
+
+    原实现只累加 `written`、不置 error，于是 run_due 把这个任务标记成
+    「今日已执行」—— 信号没发出去，当天再也不会重试，心跳还报 alive。
+    """
+    runner = _emit_chain(tmp_path).runner
+    runner.stores.signals.append = lambda sig: False        # noqa: SLF001
+
+    results = runner.run_due(FIXED_NOW)
+
+    assert results and results[0].error, "投递失败却返回了一个「正常」结果"
+    assert TASK not in runner.state.executed(DAY)
+    assert runner._fail_count[TASK] == 1                    # noqa: SLF001
+
+
+def test_an_ownership_error_is_not_swallowed_as_a_normal_failure(tmp_path):
+    """★ 所有权错误必须继续上抛 —— 它先是编程错误，然后才是一次失败。
+
+    原实现被 `except Exception` 吞掉，当成普通失败重试；连跑 3 次后甚至
+    把任务标记成「已执行」，一条架构违规就此消失。
+    """
+    runner = _chain(tmp_path, _Quiet()).runner
+
+    def bad_task(now, **kwargs):
+        raise OwnershipError("写了不属于自己的 channel")
+
+    runner.register(TASK, bad_task)
+
+    with pytest.raises(OwnershipError):
+        runner.run_due(FIXED_NOW)
+    assert TASK not in runner.state.executed(DAY), \
+        "所有权错误被记成「今天跑过了」—— 违规从此消失"
 
 
 def test_the_round_result_is_still_returned_on_failure(tmp_path):
@@ -361,3 +397,100 @@ def test_a_signal_with_an_id_still_round_trips():
     sig = Signal(code=CLEAN_CODES[0], action=ACTION_BUY, created_at=FIXED_NOW)
     back = payload_to_signals([sig.to_dict()])[0]
     assert back.sig_id == sig.sig_id
+
+
+# ------------------------------------------------------------
+# 心跳：读失败不许降级，跨日必须复位
+# ------------------------------------------------------------
+def test_heartbeat_severity_survives_an_unreadable_heartbeat(tmp_path):
+    """★ 心跳读失败 = 严重度未知，不能退回 alive 再写回去。
+
+    否则一次读取抖动就把之前报过的 `error` 静默抹掉 —— 监控端看到 alive
+    就不会告警，而故障确实发生过。
+    """
+    from signalchain.models import CHANNEL_FILENAMES
+
+    runner = _chain(tmp_path, _Quiet()).runner
+    runner.beat("first", "error")
+    assert runner.stores.heartbeat.read().status == "error"
+
+    # 模拟「心跳文件读不出来」，然后来一次「报平安」
+    (tmp_path / "ch" / CHANNEL_FILENAMES["heartbeat"]).write_text(
+        "坏文件", encoding="utf-8")
+    runner.beat("second")
+
+    assert runner.stores.heartbeat.read().status == "error", \
+        "一次读取失败就把 error 降成了 alive"
+
+
+def test_roll_day_resets_heartbeat_severity(tmp_path):
+    """严重度「只升不降」是**当日**语义；跨日必须由 roll_day 显式复位。
+
+    没有复位，一次 error 会永远留在心跳里，告警永不消失 —— 最后所有人
+    都学会忽略它。
+    """
+    runner = _chain(tmp_path, _Quiet()).runner
+    runner.beat("boom", "error")
+    assert runner.stores.heartbeat.read().status == "error"
+
+    runner.roll_day(FIXED_NOW)
+
+    assert runner.stores.heartbeat.read().status == "alive"
+    assert runner._hb_status == "alive"                      # noqa: SLF001
+
+
+# ------------------------------------------------------------
+# 辅助数据：部分缺失 ≠ 整体失败
+# ------------------------------------------------------------
+class _IndustrySource:
+    name = "industry"
+
+    def __init__(self, missing, error=""):
+        self._missing = missing
+        self._error = error
+
+    def fetch(self, ctx):
+        return AuxResult(name=self.name,
+                         values={"510050": "宽基"}, missing=self._missing,
+                         error=self._error)
+
+
+class _AuxStrategy(Strategy):
+    name = "aux"
+
+    def __init__(self, sources):
+        self._sources = sources
+
+    def universe(self):
+        return list(CLEAN_CODES)
+
+    def aux_sources(self):
+        return self._sources
+
+    def decide(self, ctx):
+        return []
+
+
+def test_partial_aux_missing_keeps_the_values_and_does_not_block_buys(tmp_path):
+    """★ 21 只里漏 1 只 ≠ 接口整个挂了。
+
+    原实现用 `AuxResult.ok`（部分缺失也为 False）判定整批失败：既丢掉了
+    已拿到的 values，又把所有买入拦下。正确的分工是「部分缺失由策略排除
+    那一只，整体失败才由闸门禁买」。
+    """
+    chain = _chain(tmp_path, _AuxStrategy([_IndustrySource(missing=["159919"])]))
+    ctx = chain.runner.build_context(FIXED_NOW)
+
+    assert ctx.aux["industry"] == {"510050": "宽基"}, "拿到的数据被整份丢掉了"
+    assert ctx.data.aux_data_ok is True, "部分缺失被误判成整体失败"
+    assert ctx.data.aux_missing == ["159919"]
+
+
+def test_total_aux_failure_still_blocks_buys(tmp_path):
+    """反方向：整体失败（error）必须仍然判不可信。"""
+    chain = _chain(tmp_path, _AuxStrategy(
+        [_IndustrySource(missing=[], error="行业分类接口超时")]))
+    ctx = chain.runner.build_context(FIXED_NOW)
+
+    assert ctx.data.aux_data_ok is False
+    assert "超时" in ctx.data.aux_reason

@@ -187,6 +187,42 @@ def test_prune_accepts_none_terminal_ids(producer):
     assert q.prune(None, TODAY) == 0
 
 
+def test_prune_reports_zero_when_the_write_back_fails(producer, tmp_path):
+    """★ 清理写回失败时不能报「删了 N 条」。
+
+    队列实际没变，调用方却会以为清干净了。跨日买单尤其危险：它们还在
+    队列里，资金一腾出来就可能被当成新信号执行。
+    """
+    q = _seed(producer)
+    buy_id = next(i["id"] for i in q.raw() if i["action"] == "buy")
+
+    class _ReadOnly(FileTransport):
+        def write(self, channel, doc):
+            return False
+
+    broken = SignalQueue(SingleWriterGuard(_ReadOnly(tmp_path), Role.PRODUCER))
+    assert broken.prune({buy_id}, TODAY) == 0
+    assert len(q.raw()) == 2, "写回失败后队列必须保持原样"
+
+
+def test_raw_refuses_a_non_list_payload(producer):
+    """★ 顶层不是列表 = 文件坏了，不能当成空队列去 RMW。
+
+    当成空队列再 append / prune，会用只含新内容/空列表覆盖原文件 ——
+    磁盘上可能躺着的那笔卖出凭空消失，而日志显示成功。
+    """
+    from signalchain.models import WireFormatError
+
+    producer.write("signals", {"坏": "形状"})
+    with pytest.raises(WireFormatError):
+        SignalQueue(producer).raw()
+
+    executor = SingleWriterGuard(producer.inner, Role.EXECUTOR)
+    executor.write("executions", {"坏": "形状"})
+    with pytest.raises(WireFormatError):
+        Stores(executor).executions.raw()
+
+
 # ------------------------------------------------------------
 # 保真原则：不认识的字段不许丢
 # ------------------------------------------------------------
@@ -284,17 +320,26 @@ def test_heartbeat_store_round_trip(producer):
     assert back.status == "positions_stale"
 
 
-def test_heartbeat_store_returns_default_when_unreadable(tmp_path):
-    """心跳读不出来时返回**默认心跳**，不抛异常。
+def test_heartbeat_store_returns_none_when_unreadable(tmp_path):
+    """★ 心跳读不出来时返回 **None（未知）**，不抛异常，也**不冒充 alive**。
 
-    心跳是观测设施，不是交易路径的一部分 —— 它坏掉不该让整轮停摆。
-    （注意这与持仓相反：持仓读不到必须降级，因为它影响决策。）
+    心跳是观测设施，坏掉不该让整轮停摆（所以不抛）；但「未知」与「alive」
+    在监控上是相反的结论。原实现退回默认 alive，下一次心跳写回时
+    `escalate("alive")` 不升不降，于是之前报过的 `error` 被**静默抹掉**，
+    监控端以为一切正常。
     """
     from signalchain.models import CHANNEL_FILENAMES
 
     guard = SingleWriterGuard(FileTransport(tmp_path), Role.PRODUCER)
     (tmp_path / CHANNEL_FILENAMES["heartbeat"]).write_text("坏文件", encoding="utf-8")
-    assert Stores(guard).heartbeat.read().status == "alive"
+    assert Stores(guard).heartbeat.read() is None
+
+
+def test_heartbeat_store_returns_a_fresh_heartbeat_when_file_is_absent(producer):
+    """文件不存在 = 首次运行，确实还没有任何历史严重度 —— 与「读失败」不同。"""
+    hb = Stores(producer).heartbeat.read()
+    assert hb is not None
+    assert hb.status == "alive" and hb.last_time is None
 
 
 def test_unreadable_positions_format_is_unknown_not_empty(executor):

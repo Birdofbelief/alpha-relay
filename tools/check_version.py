@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -81,15 +82,39 @@ def _pyproject_problems(root: Path) -> list[str]:
     return problems
 
 
-def _installed_version() -> str | None:
+def _same_path(left: Path, right: Path) -> bool:
     try:
-        from importlib.metadata import PackageNotFoundError, version
+        return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+    except OSError:          # pragma: no cover - 路径不可解析时按「不是同一份」处理
+        return False
+
+
+def _installed_version(root: Path) -> str | None:
+    """本机安装的 `signal-chain` 版本 —— **只在与当前源码是同一份时才返回**。
+
+    ★ 原实现无条件比较 `importlib.metadata.version("signal-chain")`，
+    于是「机器上另装了一个旧版、但现在跑的是这份源码」会报一条假违规。
+    检查本身是对的，错的是把**另一份包**的版本拉进了这条不变式。
+    同名不同路径时跳过，并说明为什么跳过（不能静默 —— 否则下次真出问题时
+    也没人会想到这条检查被跳过了）。
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, distribution, version
     except ImportError:      # pragma: no cover - 3.8 以下不会走到
         return None
     try:
-        return version("signal-chain")
+        dist = distribution("signal-chain")
     except PackageNotFoundError:
         return None
+    try:
+        installed_init = Path(dist.locate_file("signalchain/__init__.py"))
+    except Exception:        # noqa: BLE001 - 元数据坏了就当没装
+        return None
+    if not _same_path(installed_init, root / "signalchain" / "__init__.py"):
+        print(f"ℹ️ 本机装的是另一份 signal-chain（{installed_init}），"
+              f"与当前源码（{root}）不是同一份 —— 跳过已安装版本对比")
+        return None
+    return version("signal-chain")
 
 
 def _git(root: Path, *args: str) -> tuple[int, str]:
@@ -177,7 +202,7 @@ def check(root: Path = ROOT) -> list[str]:
 
     problems = _pyproject_problems(root)
 
-    installed = _installed_version()
+    installed = _installed_version(root)
     if installed is not None and installed != version:
         problems.append(
             f"已安装的包版本是 {installed}，源码里是 {version}"

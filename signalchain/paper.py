@@ -161,7 +161,10 @@ class PaperExecutor:
 
     def publish_positions(self, now: datetime) -> bool:
         """把持仓回写。**这是产生端能完成对账的唯一途径。**"""
-        return self.stores.positions.write(self.account.snapshot(now))
+        ok = self.stores.positions.write(self.account.snapshot(now))
+        if not ok:
+            log.warning("× 持仓回写失败 —— 产生端本轮将读不到持仓（会只卖不买）")
+        return ok
 
     # ---------------- 信号处理 ----------------
 
@@ -171,18 +174,28 @@ class PaperExecutor:
         这是**防重复下单的最后一道闸**：执行端记性不好（重启、丢回执），
         信号本身的幂等 id 是第一道，这里是第二道 —— 下单前先看看这只单子
         是不是已经挂在那里了。少了这道，一次重启就可能变成重复下单。
+
+        纸面实现里 `poll_and_execute` 用的是更精确的**逐信号**判断：
+        有 `submitted` 回执时重新撮合**同一笔**挂单（而不是再下一笔新单）。
+        本方法保留给自定义执行端与诊断使用。
         """
         index = self.stores.executions.index()
         return {sid for sid, rec in index.items() if rec.status == EXEC_SUBMITTED}
 
     def poll_and_execute(self, now: datetime) -> list[Execution]:
-        """读信号 → 逐条尝试成交 → 写回执。返回本轮产生的回执。"""
+        """读信号 → 逐条尝试成交 → 写回执。返回本轮产生的回执。
+
+        ★ **`submitted` 的挂单每轮都会再尝试撮合一次。**
+        原实现把所有 `submitted` id 直接跳过，于是限价单一旦挂上就**永远不会
+        成交**：价格后来进入限价区间也没人再看它一眼，持仓与回执永远停在
+        「挂单等待」。真实的券商会在自己的撮合引擎里继续处理挂单，纸面执行端
+        必须自己扮演这一步。
+        """
         signals = self.stores.signals.signals()
         if not signals:
             return []
 
         settled = self.stores.executions.index()
-        open_orders = self.open_order_ids()
         produced: list[Execution] = []
 
         for sig in signals:
@@ -190,20 +203,42 @@ class PaperExecutor:
             if prior is not None and prior.status in (EXEC_FILLED, EXEC_CANCELED):
                 # 已被消化 —— 幂等，静默跳过。这正是确定性 signal_id 的价值。
                 continue
-            if sig.sig_id in open_orders:
-                log.info("● %s 已有挂单，不重复下单", sig.sig_id)
-                continue
+            if prior is not None and prior.status == EXEC_SUBMITTED:
+                # 同一笔挂单重新撮合；成交后状态从 submitted → filled，
+                # 不是「又下了一笔新单」。
+                log.info("● %s 仍是挂单，重新尝试撮合", sig.sig_id)
 
+            cash_before, positions_before = self._account_state()
             execution = self._try_fill(sig, now)
             if execution is None:
                 continue
-            self.stores.executions.append(execution)
+            if prior is not None and prior.status == execution.status:
+                # 状态没变（例如仍然挂单）→ 不重写回执。
+                # gist 的每次写都是一次配额消耗，而挂单可能持续很久。
+                continue
+            if not self.stores.executions.append(execution):
+                # ★ 回执没写进去，但 _try_fill 可能已经改了内存账户。
+                # 不回滚的话，下一轮会按「没有回执」重新成交一次 —— 账实分离，
+                # 而且这个错误只在存储抖动时出现，平时完全测不到。
+                self._restore_account(cash_before, positions_before)
+                log.error("× 回执写入失败，已回滚本地账户以避免重复成交: %s",
+                          sig.sig_id)
+                continue
             produced.append(execution)
             self.stats[execution.status] = self.stats.get(execution.status, 0) + 1
 
         if produced:
             self.publish_positions(now)
         return produced
+
+    def _account_state(self) -> tuple[float, dict[str, dict[str, Any]]]:
+        """账户的可回滚快照（只含 `_try_fill` 会改的两样）。"""
+        return self.account.cash, {k: dict(v) for k, v in self.account.positions.items()}
+
+    def _restore_account(self, cash: float,
+                         positions: dict[str, dict[str, Any]]) -> None:
+        self.account.cash = cash
+        self.account.positions = positions
 
     def _try_fill(self, sig: Signal, now: datetime) -> Execution | None:
         """单条信号 → 回执。
